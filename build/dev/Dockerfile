@@ -1,7 +1,7 @@
 # Development Dockerfile with CompileDaemon for auto-reload
-FROM golang:1.23-alpine AS development
+FROM golang:alpine AS development
 
-# Install git, ca-certificates และ CompileDaemon
+# Install git, ca-certificates and CompileDaemon
 RUN apk update && apk add --no-cache git ca-certificates && update-ca-certificates
 RUN go install github.com/githubnemo/CompileDaemon@latest
 
@@ -21,7 +21,6 @@ COPY . .
 EXPOSE 9999
 
 # Use CompileDaemon to watch for changes and auto-reload
-# Development build ไม่ต้องใช้ optimization flags เพราะต้องการ compile เร็ว
 CMD ["CompileDaemon", \
    "-log-prefix=false", \
    "-build=go build -mod=readonly -o /tmp/main cmd/api/main.go", \

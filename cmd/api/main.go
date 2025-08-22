@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/joho/godotenv"
 
 	"go-template/internal/adapters/primary/http/handlers"
@@ -15,6 +15,8 @@ import (
 	"go-template/internal/modules/example_module"
 	"go-template/pkg/config"
 	postgres "go-template/pkg/platform/postgres"
+
+	"gorm.io/gorm"
 )
 
 func main() {
@@ -31,29 +33,20 @@ func main() {
 		log.Fatalf("failed to load configuration: %v", err)
 	}
 
-	// 2. เชื่อมต่อ Database หลักฐาน (Primary Database - Required)
-	primaryDB, err := postgres.NewConnection(cfg.Database)
+	// Primary Database (จำเป็นต้องมี)
+	primaryDB, err := postgres.NewConnection(cfg.Postgres.Primary)
 	if err != nil {
 		log.Fatalf("Failed to connect to primary database: %v", err)
 	}
-	log.Println("✅ Primary database connected")
 
-	// 3. เชื่อมต่อ Analytics Database (Optional)
-	analyticsDB, err := postgres.InitPostgresWithName("ANALYTICS")
-	if err != nil {
-		log.Printf("⚠️ Analytics database not available: %v", err)
-		analyticsDB = nil // ใช้ nil แทน
-	} else {
-		log.Println("✅ Analytics database connected")
-	}
-
-	// 4. เชื่อมต่อ Logs Database (Optional)
-	logsDB, err := postgres.InitPostgresWithName("LOGS")
-	if err != nil {
-		log.Printf("⚠️ Logs database not available: %v", err)
-		logsDB = nil // ใช้ nil แทน
-	} else {
-		log.Println("✅ Logs database connected")
+	// Logs Database (ไม่มีก็ได้)
+	var logsDB *gorm.DB               // ประกาศเป็น nil ไว้ก่อน
+	if cfg.Postgres.Logs.Host != "" { // เช็คว่ามี config ของ logs db ไหม
+		logsDB, err = postgres.NewConnection(cfg.Postgres.Logs)
+		if err != nil {
+			log.Printf("⚠️ Logs database configured but unavailable: %v", err)
+			logsDB = nil // ถ้าต่อไม่ได้ก็ให้เป็น nil เหมือนเดิม
+		}
 	}
 
 	// 5. ประกอบร่าง Modules (Dependency Injection)
@@ -62,8 +55,7 @@ func main() {
 	exampleHandler := example_module.NewExampleHandler(exampleService)
 
 	// ตัวอย่างการใช้งาน multiple databases
-	_ = analyticsDB // ป้องกัน unused variable
-	_ = logsDB      // ป้องกัน unused variable
+	_ = logsDB // ป้องกัน unused variable
 
 	// Health handler
 	healthHandler := handlers.NewHealthHandler()

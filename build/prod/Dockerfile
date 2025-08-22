@@ -1,6 +1,6 @@
 # Production Dockerfile - Multi-stage build for optimized binary
 # Stage 1: Build stage
-FROM golang:1.23-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 # Install git and ca-certificates (needed for fetching dependencies)
 RUN apk update && apk add --no-cache git ca-certificates && update-ca-certificates

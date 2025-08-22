@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // Logger middleware for Fiber
 func Logger() fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		start := time.Now()
 
 		// Continue processing request
@@ -32,7 +32,7 @@ func Logger() fiber.Handler {
 
 // CORS middleware
 func CORS() fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		c.Set("Access-Control-Allow-Origin", "*")
 		c.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		c.Set("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization")
@@ -47,7 +47,7 @@ func CORS() fiber.Handler {
 
 // Auth middleware (placeholder)
 func Auth() fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		// TODO: Implement JWT authentication
 		return c.Next()
 	}

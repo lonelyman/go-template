@@ -1,6 +1,6 @@
 package handlers
 
-import "github.com/gofiber/fiber/v2"
+import "github.com/gofiber/fiber/v3"
 
 // HealthHandler handles health check endpoints
 type HealthHandler struct{}
@@ -11,7 +11,7 @@ func NewHealthHandler() *HealthHandler {
 }
 
 // HealthCheck handles GET /health
-func (h *HealthHandler) HealthCheck(c *fiber.Ctx) error {
+func (h *HealthHandler) HealthCheck(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"status":  "ok",
 		"service": "go-template-api",
@@ -22,5 +22,5 @@ func (h *HealthHandler) HealthCheck(c *fiber.Ctx) error {
 // RegisterRoutes registers health check routes
 func (h *HealthHandler) RegisterRoutes(app *fiber.App) {
 	app.Get("/health", h.HealthCheck)
-	app.Get("/ping", h.HealthCheck) // Alternative endpoint
+	app.Get("/ping", h.HealthCheck)
 }
