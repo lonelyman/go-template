@@ -7,46 +7,46 @@ import (
 
 // ExampleService interface defines the business logic contract
 type ExampleService interface {
-	CreateExample(req CreateExampleRequest) (*ExampleResponse, error)
-	GetExample(id uint) (*ExampleResponse, error)
-	UpdateExample(id uint, req UpdateExampleRequest) (*ExampleResponse, error)
-	DeleteExample(id uint) error
-	ListExamples(limit, offset int) ([]ExampleResponse, error)
+	CreateExample(req ExampleDomain) (*ExampleDomain, error)
+	// GetExample(id uint) (*ExampleDomain, error)
+	// UpdateExample(id uint, req UpdateExampleRequest) (*ExampleDomain, error)
+	// DeleteExample(id uint) error
+	// ListExamples(limit, offset int) ([]ExampleDomain, error)
 }
 
 // exampleService implements ExampleService
 type exampleService struct {
-	repo ExampleRepository
+	repoExample ExampleRepository
 }
 
 // NewExampleService creates a new instance of ExampleService
 func NewExampleService(repo ExampleRepository) ExampleService {
-	return &exampleService{repo: repo}
+	return &exampleService{repoExample: repo}
 }
 
 // CreateExample creates a new example
-func (s *exampleService) CreateExample(req CreateExampleRequest) (*ExampleResponse, error) {
+func (s *exampleService) CreateExample(req ExampleDomain) (*ExampleDomain, error) {
 	// Check if email already exists
-	existing, _ := s.repo.GetByEmail(req.Email)
+	existing, err := s.repoExample.GetByEmail(req.Email)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check email existence: %w", err)
+	}
 	if existing != nil {
 		return nil, errors.New("email already exists")
 	}
-
 	// Create new example
 	example := &ExampleDomain{
 		Name:   req.Name,
 		Email:  req.Email,
 		Status: "active",
 	}
-
-	if err := s.repo.Create(example); err != nil {
+	if err := s.repoExample.Create(example); err != nil {
 		return nil, fmt.Errorf("failed to create example: %w", err)
 	}
-
-	response := example.ToResponse()
-	return &response, nil
+	return example, nil
 }
 
+/*
 // GetExample retrieves an example by ID
 func (s *exampleService) GetExample(id uint) (*ExampleResponse, error) {
 	example, err := s.repo.GetByID(id)
@@ -114,3 +114,4 @@ func (s *exampleService) ListExamples(limit, offset int) ([]ExampleResponse, err
 
 	return responses, nil
 }
+*/

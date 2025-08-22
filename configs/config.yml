@@ -1,0 +1,16 @@
+# configs/config.yml
+app:
+   name: "Go Template API"
+   version: "v1.0.0"
+
+server:
+   port: "9998"
+
+postgres:
+   primary:
+      host: "localhost"
+      port: "7430" # 👈 ค่าสำหรับ local dev
+      user: "root"
+      password: "your_password_here"
+      name: "go_template"
+      ssl_mode: "disable"
