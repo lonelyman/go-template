@@ -1,0 +1,30 @@
+# Vendor directory
+vendor/
+
+# Development tools
+.git/
+.github/
+.gitignore
+.dockerignore
+docker-compose*.yml
+Dockerfile*
+
+# Documentation
+*.md
+docs/
+
+# Logs
+*.log
+app.log
+
+# IDE
+.vscode/
+.idea/
+
+# Test files
+*_test.go
+tests/
+
+# Build files
+main
+*.exe

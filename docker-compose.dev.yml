@@ -1,0 +1,34 @@
+services:
+  app-dev:
+    build:
+      context: .
+      dockerfile: build/dev/Dockerfile
+    ports:
+      # แมปพอร์ตจากเครื่อง Host (ซ้าย) ไปยังพอร์ตใน Container (ขวา)
+      # HOST_PORT:CONTAINER_PORT
+      # ตัวอย่าง: "9999:8080" -> เข้าเว็บผ่าน localhost:9999 แต่ app ใน container ทำงานที่ port 8080
+      # DEV_PORT (9999) -> PORT (8080)
+      - "${DEV_PORT}:${PORT}"         # Direct environment variable mapping
+    environment:
+      - DOCKER_ENV=true               # Flag to indicate running in Docker
+      - PORT=${PORT}                  # Use PORT from .env
+      - APP_NAME=${APP_NAME}
+      - APP_VERSION=${APP_VERSION}
+      - DB_HOST=host.docker.internal  # Access host machine's PostgreSQL
+      - DB_PORT=7430                  # Use exposed port on host
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - FIBER_MODE=${FIBER_MODE}
+    volumes:
+      - .:/app                        # Mount source code for live reload
+      - /app/vendor                   # Exclude vendor directory
+    networks:
+      - app-network
+    restart: unless-stopped
+    stdin_open: true                  # Keep stdin open for interactive debugging
+    tty: true                         # Allocate a TTY
+
+networks:
+  app-network:
+    driver: bridge

@@ -1,0 +1,29 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: build/prod/Dockerfile
+    ports:
+      # แมปพอร์ตจากเครื่อง Host (ซ้าย) ไปยังพอร์ตใน Container (ขวา)
+      # HOST_PORT:CONTAINER_PORT
+      # ตัวอย่าง: "9090:8080" -> เข้าเว็บผ่าน localhost:9090 แต่ app ใน container ทำงานที่ port 8080
+      # PROD_PORT (9090) -> PORT (8080)
+      - "${PROD_PORT}:${PORT}"        # Direct environment variable mapping
+    environment:
+      - DOCKER_ENV=true               # Flag to indicate running in Docker
+      - PORT=${PORT}                  # Use PORT from .env
+      - APP_NAME=${APP_NAME}
+      - APP_VERSION=${APP_VERSION}
+      - DB_HOST=postgresql            # Override for Docker network
+      - DB_PORT=5432                  # Override for Docker internal port
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - FIBER_MODE=${FIBER_MODE}
+    networks:
+      - app-network
+    restart: unless-stopped
+
+networks:
+  app-network:
+    driver: bridge
