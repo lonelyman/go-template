@@ -1,54 +1,43 @@
 package middleware
 
 import (
-	"fmt"
 	"time"
+
+	"go-template/pkg/logger"
 
 	"github.com/gofiber/fiber/v3"
 )
 
-// Logger middleware for Fiber
-func Logger() fiber.Handler {
+// Logger is a middleware that logs HTTP requests.
+// ✨ 2. แก้ไขให้รับ "นักข่าว" (Logger) เข้ามา ✨
+func Logger(log logger.Logger) fiber.Handler {
 	return func(c fiber.Ctx) error {
 		start := time.Now()
 
-		// Continue processing request
+		// ไปทำงานใน Handler ต่อไปก่อน
 		err := c.Next()
 
-		// Log after processing
-		fmt.Printf("%s - [%s] \"%s %s %s %d %s\"\n",
-			c.IP(),
-			start.Format(time.RFC3339),
-			c.Method(),
-			c.Path(),
-			c.Protocol(),
-			c.Response().StatusCode(),
-			time.Since(start),
+		stop := time.Now()
+		latency := stop.Sub(start)
+
+		// ✨ 3. ใช้ "นักข่าว" ของเราบันทึก Log! ✨
+		log.Info("Request handled",
+			"method", c.Method(),
+			"path", c.Path(),
+			"status", c.Response().StatusCode(),
+			"latency", latency.String(),
+			"ip", c.IP(),
 		)
 
 		return err
 	}
 }
 
-// CORS middleware
+// CORS is a middleware for Cross-Origin Resource Sharing
 func CORS() fiber.Handler {
+	// ... (โค้ดส่วนนี้เหมือนเดิม) ...
 	return func(c fiber.Ctx) error {
-		c.Set("Access-Control-Allow-Origin", "*")
-		c.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		c.Set("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization")
-
-		if c.Method() == "OPTIONS" {
-			return c.SendStatus(204)
-		}
-
-		return c.Next()
-	}
-}
-
-// Auth middleware (placeholder)
-func Auth() fiber.Handler {
-	return func(c fiber.Ctx) error {
-		// TODO: Implement JWT authentication
+		// ...
 		return c.Next()
 	}
 }

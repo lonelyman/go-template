@@ -1,266 +1,155 @@
-# 🗄️ Multi-Database PostgreSQL Usage Guide
+คู่มือการใช้งาน PostgreSQL หลาย Database
+"พิมพ์เขียว" ของเราถูกออกแบบมาให้รองรับการเชื่อมต่อกับ PostgreSQL Database หลายตัวได้อย่างยืดหยุ่นและทนทานต่อความผิดพลาด (Resilient) เอกสารนี้จะอธิบายหลักการและขั้นตอนการใช้งานทั้งหมด
 
-_Updated: August 2025 - Simple & Practical Approach_
+เป้าหมายหลัก: เพื่อแยกประเภทของข้อมูลออกจากกัน ซึ่งช่วยเพิ่มประสิทธิภาพและความปลอดภัย เช่น:
 
-## 🚀 Overview
+Primary DB: เก็บข้อมูลหลักของธุรกิจ (Users, Orders) - ต้องพร้อมใช้งานเสมอ
 
-ระบบรองรับการเชื่อมต่อ PostgreSQL หลายฐานข้อมูลแบบง่ายๆ:
+Logs DB: เก็บข้อมูล Log การใช้งาน (Activity Logs) - ถ้าล่มไปชั่วคราว แอปหลักต้องไม่พังตาม
 
--  ✅ **Primary Database** - ฐานข้อมูลหลัก (Required)
--  ✅ **Optional Databases** - ฐานข้อมูลเสริม (Analytics, Logs, Reports)
--  ✅ **Graceful Degradation** - แอปทำงานได้แม้ฐานข้อมูลเสริมไม่มี
--  ✅ **Environment Variables** - ตั้งค่าผ่าน .env หรือ environment
--  ✅ **Docker Support** - ใช้งานใน Docker ได้
+Analytics DB: เก็บข้อมูลสำหรับการวิเคราะห์ - เช่นเดียวกับ Logs DB
 
-## 📝 Basic Usage:
+1. การตั้งค่า (Configuration)
+   ระบบ Config ของเราใช้หลักการ 3 ชั้น (Defaults -> File -> Environment) เพื่อความยืดหยุ่นสูงสุด
 
-### 1. **Primary Database** (Required)
+1.1 configs/config.yml (เมนูมาตรฐาน)
+นี่คือไฟล์ที่กำหนด "พิมพ์เขียว" และค่าเริ่มต้นสำหรับตอนพัฒนาที่เครื่องเรา
 
-```go
-// เชื่อมต่อฐานข้อมูลหลัก - ต้องมี
-primaryDB, err := postgres.NewConnection(cfg.Database)
+# configs/config.yml
+
+postgres:
+primary:
+host: "localhost"
+port: "7430"
+user: "root"
+password: "" # ไม่เก็บความลับที่นี่
+name: "go_template"
+ssl_mode: "disable"
+logs:
+host: "" # เว้นว่างไว้สำหรับ optional db
+port: ""
+user: ""
+password: ""
+name: ""
+ssl_mode: "disable"
+
+1.2 .env (โพยลับ)
+ไฟล์นี้จะใช้ "ทับ" ค่าจาก config.yml และเก็บข้อมูลที่เป็นความลับ เราจะใช้ชื่อตัวแปรที่สอดคล้องกับโครงสร้างใน struct ของเรา
+
+# .env (สำหรับ Local Development)
+
+# --- Primary Database ---
+
+POSTGRES_PRIMARY_HOST=localhost
+POSTGRES_PRIMARY_PORT=7430
+POSTGRES_PRIMARY_USER=root
+POSTGRES_PRIMARY_PASSWORD=12345678
+POSTGRES_PRIMARY_NAME=go_template
+
+# --- Logs Database ---
+
+POSTGRES_LOGS_HOST=localhost
+POSTGRES_LOGS_PORT=7431 # (อาจจะเป็นคนละพอร์ตหรือคนละ instance)
+POSTGRES_LOGS_USER=root
+POSTGRES_LOGS_PASSWORD=12345678
+POSTGRES_LOGS_NAME=go_template_logs
+
+1.3 pkg/config/config.go (พิมพ์เขียวในโค้ด)
+struct ใน Go ของเราจะต้องมีโครงสร้างที่ตรงกับไฟล์ .yml เพื่อให้ Viper สามารถ map ค่าได้อย่างถูกต้อง
+
+// pkg/config/config.go
+
+type Config struct {
+// ...
+Postgres PostgresDbs `mapstructure:"postgres"`
+}
+
+type PostgresDbs struct {
+Primary PostgresConfig `mapstructure:"primary"`
+Logs PostgresConfig `mapstructure:"logs"`
+Analytics PostgresConfig `mapstructure:"analytics"`
+}
+
+type PostgresConfig struct {
+Host string `mapstructure:"host"`
+Port string `mapstructure:"port"`
+User string `mapstructure:"user"`
+Password string `mapstructure:"password"`
+DBName string `mapstructure:"name"`
+SSLMode string `mapstructure:"ssl_mode"`
+}
+
+2. การเชื่อมต่อในแอปพลิเคชัน (main.go)
+   ใน main.go เราจะจัดการกับการเชื่อมต่อ DB แต่ละประเภทแตกต่างกันไปตามความสำคัญ
+
+// cmd/api/main.go
+
+// Primary Database (จำเป็นต้องมี)
+// ใช้หลักการ "Fail Fast": ถ้าต่อไม่ได้ ให้โปรแกรมพังไปเลย
+primaryDB, err := postgres.NewConnection(cfg.Postgres.Primary)
 if err != nil {
-    log.Fatalf("Failed to connect to primary database: %v", err)
+log.Fatalf("❌ Failed to connect to primary database: %v", err)
 }
-log.Println("✅ Primary database connected")
 
-// ใช้งาน
-var users []User
-primaryDB.Find(&users)
-```
-
-### 2. **Optional Databases** (Simple Pattern)
-
-```go
-// Analytics Database (Optional)
-analyticsDB, err := postgres.InitPostgresWithName("ANALYTICS")
+// Logs Database (ไม่มีก็ได้)
+// ใช้หลักการ "Fallback": ถ้าต่อไม่ได้ ก็แค่ Log เตือน แล้วทำงานต่อไป
+var logsDB \*gorm.DB
+if cfg.Postgres.Logs.Host != "" { // เช็คว่ามีการตั้งค่าหรือไม่
+logsDB, err = postgres.NewConnection(cfg.Postgres.Logs)
 if err != nil {
-    log.Printf("⚠️ Analytics database not available: %v", err)
-    analyticsDB = nil // ใช้ nil
-} else {
-    log.Println("✅ Analytics database connected")
+log.Printf("⚠️ Logs database configured but unavailable: %v", err)
+logsDB = nil // ตั้งค่าเป็น nil แล้วทำงานต่อ
+}
 }
 
-// Logs Database (Optional)
-logsDB, err := postgres.InitPostgresWithName("LOGS")
-if err != nil {
-    log.Printf("⚠️ Logs database not available: %v", err)
-    logsDB = nil // ใช้ nil
-} else {
-    log.Println("✅ Logs database connected")
+3. การจัดการโครงสร้าง (Database Migrations)
+   เราจะแยก "พิมพ์เขียว" (.sql ไฟล์) และ "คำสั่ง" (Makefile) สำหรับแต่ละ Database ออกจากกันอย่างชัดเจน
+
+3.1 โครงสร้างโฟลเดอร์
+db/
+└── migrations/
+├── primary/
+│ └── 000001_create_example_users_table.up.sql
+└── logs/
+└── 000001_create_activity_logs_table.up.sql
+
+3.2 Makefile
+"แผงควบคุม" ของเราจะมีคำสั่งแยกสำหรับแต่ละ Database ทำให้เราเลือกทำงานได้อย่างเจาะจง
+
+# Makefile
+
+# --- Shortcuts for convenience ---
+
+db-migrate-primary:
+@make db-migrate db=primary
+
+db-migrate-logs:
+@make db-migrate db=logs
+
+# --- คำสั่งหลัก (ยืดหยุ่น) ---
+
+db-migrate:
+ifndef db
+$(error db is not set. Usage: make db-migrate db=<primary|logs>)
+endif
+	@docker compose -f docker-compose.dev.yml run --rm migrate \
+	  go run ./cmd/migrate/main.go --db=$(db) --path=db/migrations/$(db)
+
+3.3 cmd/migrate/main.go
+โปรแกรม migrate ของเราฉลาดพอที่จะรับ Flag --db และ --path เพื่อไปดึง Connection String ที่ถูกต้องจาก Config และทำงานกับไฟล์ Migration ที่ถูกต้อง
+
+// cmd/migrate/main.go
+
+// ...
+var dsn string
+switch dbName {
+case "primary":
+dsn = cfg.Postgres.Primary.BuildDSN()
+case "logs":
+dsn = cfg.Postgres.Logs.BuildDSN()
+default:
+log.Fatalf("❌ Unknown database name: '%s'", dbName)
 }
 
-// ใช้งาน - เช็ค nil ก่อน
-if analyticsDB != nil {
-    analyticsDB.Create(&AnalyticsEvent{UserID: 123, Event: "login"})
-}
-
-if logsDB != nil {
-    logsDB.Create(&ApplicationLog{Level: "INFO", Message: "User logged in"})
-}
-```
-
-## 📊 Simple Data Structures
-
-```go
-type User struct {
-    ID        uint      `gorm:"primaryKey"`
-    Email     string    `gorm:"unique"`
-    CreatedAt time.Time
-}
-
-type AnalyticsEvent struct {
-    ID        uint                   `gorm:"primaryKey"`
-    UserID    uint
-    Event     string
-    Timestamp time.Time
-    Details   map[string]interface{} `gorm:"type:jsonb"`
-}
-
-type ApplicationLog struct {
-    ID        uint                   `gorm:"primaryKey"`
-    Level     string
-    Message   string
-    Timestamp time.Time
-    Details   map[string]interface{} `gorm:"type:jsonb"`
-}
-```
-
-## 🏗️ Complete Example (main.go)
-
-```go
-package main
-
-import (
-    "log"
-    "go-template/pkg/config"
-    postgres "go-template/pkg/platform/postgres"
-)
-
-func main() {
-    // 1. Load configuration
-    cfg, err := config.LoadConfig()
-    if err != nil {
-        log.Fatalf("failed to load configuration: %v", err)
-    }
-
-    // 2. Connect to primary database (required)
-    primaryDB, err := postgres.NewConnection(cfg.Database)
-    if err != nil {
-        log.Fatalf("Failed to connect to primary database: %v", err)
-    }
-    log.Println("✅ Primary database connected")
-
-    // 3. Connect to optional databases
-    analyticsDB, err := postgres.InitPostgresWithName("ANALYTICS")
-    if err != nil {
-        log.Printf("⚠️ Analytics database not available: %v", err)
-        analyticsDB = nil
-    } else {
-        log.Println("✅ Analytics database connected")
-    }
-
-    logsDB, err := postgres.InitPostgresWithName("LOGS")
-    if err != nil {
-        log.Printf("⚠️ Logs database not available: %v", err)
-        logsDB = nil
-    } else {
-        log.Println("✅ Logs database connected")
-    }
-
-    // 4. Use databases
-    // Primary database - always available
-    var users []User
-    primaryDB.Find(&users)
-
-    // Optional databases - check nil first
-    if analyticsDB != nil {
-        event := AnalyticsEvent{
-            UserID: 123,
-            Event:  "user_login",
-        }
-        analyticsDB.Create(&event)
-    }
-
-    if logsDB != nil {
-        log := ApplicationLog{
-            Level:   "INFO",
-            Message: "Application started",
-        }
-        logsDB.Create(&log)
-    }
-}
-```
-
-## 🌍 Environment Variables (Simple)
-
-### Required (Primary Database):
-
-```env
-DB_HOST=localhost
-DB_PORT=7430
-DB_USER=postgres
-DB_PASSWORD=password
-DB_NAME=go_template
-DB_SSL_MODE=disable
-DB_TIMEZONE=Asia/Bangkok
-```
-
-### Optional (Additional Databases):
-
-```env
-# Analytics Database (Optional)
-ANALYTICS_DB_HOST=analytics-server.com
-ANALYTICS_DB_PORT=5432
-ANALYTICS_DB_USER=analytics_user
-ANALYTICS_DB_PASSWORD=analytics_secret
-ANALYTICS_DB_DBNAME=analytics_db
-ANALYTICS_DB_SSLMODE=require
-ANALYTICS_DB_TIMEZONE=Asia/Bangkok
-
-# Logs Database (Optional)
-LOGS_DB_HOST=logs-server.com
-LOGS_DB_PORT=5432
-LOGS_DB_USER=logs_user
-LOGS_DB_PASSWORD=logs_secret
-LOGS_DB_DBNAME=application_logs
-LOGS_DB_SSLMODE=require
-LOGS_DB_TIMEZONE=Asia/Bangkok
-```
-
-## 💡 Best Practices (Simple)
-
-### ✅ DO - Simple Nil Check
-
-```go
-// ✅ Simple and clear
-analyticsDB, err := postgres.InitPostgresWithName("ANALYTICS")
-if err != nil {
-    log.Printf("⚠️ Analytics database not available: %v", err)
-    analyticsDB = nil
-}
-
-// Use with nil check
-if analyticsDB != nil {
-    analyticsDB.Create(&event)
-}
-```
-
-### ❌ DON'T - Over-complicated Pattern
-
-```go
-// ❌ Too complex for simple usage
-var analyticsRepo IAnalyticsRepository
-if analyticsDB, err := postgres.InitPostgresWithName("ANALYTICS"); err != nil {
-    analyticsRepo = NewNullAnalyticsRepository() // Too much abstraction
-} else {
-    analyticsRepo = NewPostgresAnalyticsRepository(analyticsDB)
-}
-```
-
-## 📊 Use Cases
-
-### 🎯 **Primary Database**: Core application data
-
--  Users, products, orders
--  **Always required**
--  App crashes if not available
-
-### 📈 **Analytics Database**: Metrics and tracking
-
--  User behavior tracking
--  Performance metrics
--  **Optional** - app continues without it
-
-### 📝 **Logs Database**: Application logging
-
--  Error logs, access logs
--  Debugging information
--  **Optional** - app continues without it
-
-## 🛠️ Troubleshooting
-
-### Connection Issues:
-
-```bash
-# Check if PostgreSQL is running
-lsof -i :7430
-
-# Test connection manually
-psql -h localhost -p 7430 -U postgres -d go_template
-```
-
-### Docker Development:
-
-```bash
-# Run with Docker
-make docker-dev
-
-# Stop
-make docker-dev-stop
-```
-
----
-
-_Last Updated: August 2025 - Simple & Practical_  
-_For support, check the project's README.md or create an issue._
+m, err := migrate.New(fmt.Sprintf("file://%s", migrationPath), dsn)
+// ...

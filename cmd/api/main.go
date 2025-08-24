@@ -9,80 +9,113 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/joho/godotenv"
+	"gorm.io/gorm"
 
 	"go-template/internal/adapters/primary/http/handlers"
 	"go-template/internal/adapters/primary/http/middleware"
-	"go-template/internal/modules/example_module"
+	"go-template/internal/modules/example/example_user"
 	"go-template/pkg/config"
-	postgres "go-template/pkg/platform/postgres"
+	"go-template/pkg/custom_errors"
+	"go-template/pkg/logger"
+	"go-template/pkg/platform/postgres"
+	"go-template/pkg/response"
+)
 
-	"gorm.io/gorm"
+// "ช่องรับ" ข้อมูล Build ที่จะถูกยิงเข้ามาโดย Linker Flags (-ldflags)
+var (
+	AppVersion string
+	BuildTime  string
+	CommitHash string
 )
 
 func main() {
-	// 0. โหลด Environment Variables
+	// --- 0. โหลด Environment Variables (สำหรับ Local Dev) ---
 	if os.Getenv("DOCKER_ENV") != "true" {
 		if err := godotenv.Load(); err != nil {
 			log.Println("Warning: .env file not found")
 		}
 	}
 
-	// 1. โหลด Configuration
+	// --- 1. โหลด Configuration ---
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		log.Fatalf("failed to load configuration: %v", err)
+		log.Fatalf("❌ Failed to load configuration: %v", err)
 	}
 
-	// Primary Database (จำเป็นต้องมี)
-	primaryDB, err := postgres.NewConnection(cfg.Postgres.Primary)
+	// --- 2. สร้าง Logger ---
+	var appLogger logger.Logger
+	if cfg.Server.Mode == "development" {
+		appLogger = logger.NewPrettyLogger()
+	} else {
+		appLogger = logger.NewSlogLogger()
+	}
+	appLogger.Info("Logger initialized", "mode", cfg.Server.Mode)
+
+	// --- 3. เชื่อมต่อ Platforms (Databases) ---
+	primaryDB, err := postgres.NewConnection(cfg.Postgres.Primary, appLogger)
 	if err != nil {
-		log.Fatalf("Failed to connect to primary database: %v", err)
+		appLogger.Error("Failed to connect to primary database", err)
+		os.Exit(1)
 	}
-
-	// Logs Database (ไม่มีก็ได้)
-	var logsDB *gorm.DB               // ประกาศเป็น nil ไว้ก่อน
-	if cfg.Postgres.Logs.Host != "" { // เช็คว่ามี config ของ logs db ไหม
-		logsDB, err = postgres.NewConnection(cfg.Postgres.Logs)
+	var logsDB *gorm.DB
+	if cfg.Postgres.Logs.Host != "" {
+		logsDB, err = postgres.NewConnection(cfg.Postgres.Logs, appLogger)
 		if err != nil {
-			log.Printf("⚠️ Logs database configured but unavailable: %v", err)
-			logsDB = nil // ถ้าต่อไม่ได้ก็ให้เป็น nil เหมือนเดิม
+			appLogger.Warn("Logs database configured but unavailable", "error", err)
+			logsDB = nil
 		}
 	}
 
-	// 5. ประกอบร่าง Modules (Dependency Injection)
-	exampleRepo := example_module.NewExampleRepository(primaryDB)
-	exampleService := example_module.NewExampleService(exampleRepo)
-	exampleHandler := example_module.NewExampleHandler(exampleService)
-
-	// ตัวอย่างการใช้งาน multiple databases
+	// --- 4. ประกอบร่าง Modules (Dependency Injection) ---
 	_ = logsDB // ป้องกัน unused variable
 
-	// Health handler
-	healthHandler := handlers.NewHealthHandler()
+	healthHandler := handlers.NewHealthHandler(primaryDB)
 
-	// 4. ตั้งค่า Web Server (Fiber)
+	exampleUserRepo := example_user.NewExampleRepository(primaryDB, appLogger)
+	exampleUserService := example_user.NewExampleUserService(exampleUserRepo, cfg.Auth.JWTSecret, appLogger)
+	exampleUserHandler := example_user.NewExampleUserHandler(exampleUserService, appLogger)
+
+	// --- 5. ตั้งค่า Web Server (Fiber) ---
 	app := fiber.New(fiber.Config{
-		AppName: fmt.Sprintf("%s %s", cfg.App.Name, cfg.App.Version),
+		AppName: fmt.Sprintf("%s %s", cfg.App.Name, AppVersion),
+		ErrorHandler: func(c fiber.Ctx, err error) error {
+			if appErr, ok := err.(*custom_errors.AppError); ok {
+				return response.Error(c, appErr)
+			}
+			systemErr := custom_errors.SystemErrorWithDetails("An unexpected error occurred", err.Error())
+			appLogger.Error("Unhandled error has occurred", systemErr)
+			return response.Error(c, systemErr)
+		},
 	})
 
-	app.Use(middleware.Logger())
+	// --- 6. ติดตั้ง Middlewares & Routes ---
+	app.Use(middleware.Logger(appLogger))
 	app.Use(middleware.CORS())
 
-	// Register health routes
 	healthHandler.RegisterRoutes(app)
 
-	// --- ลงทะเบียน Routes ของแต่ละ Module (แบบ Modular) --- ✨
 	apiV1 := app.Group("/api/v1")
+	example := apiV1.Group("/example")
+	exampleUserHandler.RegisterRoutes(example)
 
-	// Register example module routes
-	exampleHandler.RegisterRoutes(apiV1)
-
-	// 5. เริ่มและปิดการทำงานของ Server (Start & Graceful Shutdown)
+	// --- 7. เริ่มและปิดการทำงานของ Server ---
 	go func() {
-		listenAddr := fmt.Sprintf(":%s", cfg.Server.Port)
-		log.Printf("🚀 Server starting on port %s", cfg.Server.Port)
+		// แอปของเราจะ Listen ที่ AppPort "ข้างใน" Container เสมอ
+		listenAddr := fmt.Sprintf(":%s", cfg.Server.AppPort)
+
+		appLogger.Info("Server starting...",
+			"version", AppVersion,
+			"buildTime", BuildTime,
+			"commit", CommitHash,
+		)
+		appLogger.Info("Application running",
+			"internalPort", cfg.Server.AppPort,
+			"externalUrl", fmt.Sprintf("http://localhost:%s", cfg.Server.HostPort),
+		)
+
 		if err := app.Listen(listenAddr); err != nil {
-			log.Fatalf("server failed to start: %v", err)
+			appLogger.Error("Server failed to start", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -90,11 +123,13 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	<-quit
-	log.Println("🛑 Shutting down server...")
+	appLogger.Info("Shutting down server...")
 
-	if err := app.Shutdown(); err != nil { // ✨ ถูกต้องสำหรับ Fiber v2
-		log.Fatalf("server shutdown failed: %v", err)
+	// ใช้ app.Shutdown() แบบไม่มี context ตามเวอร์ชัน Fiber ที่เราใช้
+	if err := app.Shutdown(); err != nil {
+		appLogger.Error("Server shutdown failed", err)
+		os.Exit(1)
 	}
 
-	log.Println("✅ Server gracefully stopped")
+	appLogger.Info("Server gracefully stopped")
 }

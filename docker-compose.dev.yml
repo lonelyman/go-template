@@ -1,34 +1,54 @@
+# docker-compose.dev.yml
 services:
+  # --- Application Service ---
   app-dev:
+    # container_name: my-awesome-app # ตั้งชื่อเองได้เลย
     build:
       context: .
       dockerfile: build/dev/Dockerfile
-    ports:
-      # แมปพอร์ตจากเครื่อง Host (ซ้าย) ไปยังพอร์ตใน Container (ขวา)
-      # HOST_PORT:CONTAINER_PORT
-      # ตัวอย่าง: "9999:8080" -> เข้าเว็บผ่าน localhost:9999 แต่ app ใน container ทำงานที่ port 8080
-      # DEV_PORT (9999) -> PORT (8080)
-      - "${DEV_PORT}:${PORT}"         # Direct environment variable mapping
+    env_file:
+      - .env
     environment:
-      - DOCKER_ENV=true               # Flag to indicate running in Docker
-      - PORT=${PORT}                  # Use PORT from .env
-      - APP_NAME=${APP_NAME}
-      - APP_VERSION=${APP_VERSION}
-      - DB_HOST=host.docker.internal  # Access host machine's PostgreSQL
-      - DB_PORT=7430                  # Use exposed port on host
-      - DB_USER=${DB_USER}
-      - DB_PASSWORD=${DB_PASSWORD}
-      - DB_NAME=${DB_NAME}
-      - FIBER_MODE=${FIBER_MODE}
+      - DOCKER_ENV=true
+      - APP_PORT=${APP_PORT}
+      - HOST_PORT=${HOST_PORT}
+    ports:
+      - "${HOST_PORT}:${APP_PORT}"
     volumes:
-      - .:/app                        # Mount source code for live reload
-      - /app/vendor                   # Exclude vendor directory
+      - .:/app
+    networks:
+      - app-network # 👈 บอกให้ app-dev เข้าร่วมหมู่บ้าน app-network
+
+  # --- Migrate Service ---
+  migrate:
+    build:
+      context: .
+      dockerfile: build/dev/Dockerfile
+    env_file:
+      - .env # 👈 อ่านจาก .env ไฟล์เดียวกัน
+    volumes:
+      - .:/app
+    networks:
+      - app-network # 👈 บอกให้ migrate เข้าร่วมหมู่บ้าน app-network
+  
+  app-debug:
+    build:
+      context: .
+      dockerfile: build/dev/Dockerfile
+    env_file:
+      - .env
+    environment:
+      - DOCKER_ENV=true
+    ports:
+      - "9997:9998" # 👈 ใช้ Port อื่นที่ไม่ซ้ำกับของเดิม
     networks:
       - app-network
-    restart: unless-stopped
-    stdin_open: true                  # Keep stdin open for interactive debugging
-    tty: true                         # Allocate a TTY
+    # ⭐️⭐️⭐️ นี่คือหัวใจ! เราจะ override command ⭐️⭐️⭐️
+    # สั่งให้มันรันแอปตรงๆ เลย ไม่ต้องผ่าน CompileDaemon
+    command: ["go", "run", "./cmd/api/main.go"]
 
+# ⭐️⭐️⭐️ บอก Docker Compose ว่า "หมู่บ้าน" ที่เราจะไปอยู่นั้น
+# เป็นหมู่บ้านที่มีอยู่แล้วนะ ไม่ต้องสร้างใหม่!
 networks:
   app-network:
-    driver: bridge
+    external: true

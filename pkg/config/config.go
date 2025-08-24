@@ -12,6 +12,7 @@ type Config struct {
 	App      AppConfig    `mapstructure:"app"`
 	Server   ServerConfig `mapstructure:"server"`
 	Postgres PostgresDbs  `mapstructure:"postgres"`
+	Auth     AuthConfig   `mapstructure:"auth"`
 }
 
 type AppConfig struct {
@@ -20,12 +21,18 @@ type AppConfig struct {
 }
 
 type ServerConfig struct {
-	Port string `mapstructure:"port"`
+	Mode     string `mapstructure:"mode"`
+	AppPort  string `mapstructure:"appport"`  // ✨ ชัดเจน! นี่คือพอร์ตของ App ข้างใน
+	HostPort string `mapstructure:"hostport"` // ✨ ชัดเจน! นี่คือพอร์ตบน Host ข้างนอก
 }
 
 type PostgresDbs struct {
 	Primary PostgresConfig `mapstructure:"primary"`
 	Logs    PostgresConfig `mapstructure:"logs"`
+}
+
+type AuthConfig struct {
+	JWTSecret string `mapstructure:"jwtSecret"`
 }
 
 type PostgresConfig struct {
