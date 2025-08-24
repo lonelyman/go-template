@@ -1,4 +1,3 @@
-// cmd/migrate/main.go
 package main
 
 import (
@@ -7,58 +6,82 @@ import (
 	"fmt"
 	"log"
 
-	// "go-template/pkg/config" // 👈 คอมเมนต์ config import ออกไปก่อน
-
 	"github.com/golang-migrate/migrate/v4"
-	_ "github.com/golang-migrate/migrate/v4/database/postgres"
-	_ "github.com/golang-migrate/migrate/v4/source/file"
+	_ "github.com/golang-migrate/migrate/v4/database/postgres" // Driver สำหรับ PostgreSQL
+	_ "github.com/golang-migrate/migrate/v4/source/file"       // Driver สำหรับอ่านจากไฟล์
 	"github.com/joho/godotenv"
+
+	"go-template/pkg/config" // Import config loader ของเรา
 )
 
 func main() {
+	// 1. โหลด .env สำหรับ Local Development
+	// ตอนรันใน Docker Compose, env var จะถูกฉีดเข้ามาโดยตรงอยู่แล้ว
 	if err := godotenv.Load(); err != nil {
-		log.Println("Warning: .env file not found")
+		log.Println("Info: No .env file found, using OS environment variables")
 	}
 
-	var dbName, migrationPath string
-	flag.StringVar(&dbName, "db", "primary", "Name of the database to migrate (e.g., primary)")
-	flag.StringVar(&migrationPath, "path", "db/migrations/primary", "Path to the migration files (e.g., db/migrations/primary)")
+	// 2. รับคำสั่งจาก Command Line (Flags)
+	var dbName, migrationPath, action string
+	flag.StringVar(&dbName, "db", "", "Name of the database to migrate (e.g., primary, logs)")
+	flag.StringVar(&migrationPath, "path", "", "Path to the migration files (e.g., db/migrations/primary)")
+	flag.StringVar(&action, "action", "up", "Migration action: up or down")
 	flag.Parse()
 
-	log.Printf("🚀 Starting migration for database: '%s'", dbName)
+	// ตรวจสอบว่าผู้ใช้ใส่ Flag ที่จำเป็นมาครบหรือไม่
+	if dbName == "" || migrationPath == "" {
+		log.Fatalf("❌ Both --db and --path flags are required! Usage: go run ./cmd/migrate/main.go --db=<name> --path=<path>")
+	}
 
-	// 🛑🛑🛑 ลองคอมเมนต์โค้ดส่วนอ่าน Config นี้ทั้งหมดออกไปก่อนชั่วคราว 🛑🛑🛑
-	/*
-	   cfg, err := config.LoadConfig()
-	   if err != nil {
-	      log.Fatalf("❌ Could not load config: %v", err)
-	   }
+	log.Printf("🚀 Starting migration for database: '%s' | Action: '%s'", dbName, action)
 
-	   var dsn string
-	   switch dbName {
-	   case "primary":
-	      dsn = cfg.Postgres.Primary.BuildDSN()
-	   default:
-	      log.Fatalf("❌ Unknown database name: '%s'", dbName)
-	   }
-	*/
+	// 3. โหลด Configuration
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		log.Fatalf("❌ Could not load config: %v", err)
+	}
 
-	// ⭐️⭐️⭐️ แล้วลอง Hardcode DSN ที่ถูกต้อง 100% ลงไปตรงๆ แบบนี้เลย! ⭐️⭐️⭐️
-	// (พี่เอาข้อมูลจาก .env ที่น้องเคยส่งให้พี่มาสร้างให้)
-	dsn := "postgres://root:12345678@localhost:7430/go_template?sslmode=disable"
-
-	log.Println("--- [DEBUG] FORCING CONNECTION TO:", "localhost:7430", "---")
+	// 4. เลือก Connection String (DSN) ที่ถูกต้องตาม Flag ที่ได้รับมา
+	var dsn string
+	switch dbName {
+	case "primary":
+		dsn = cfg.Postgres.Primary.BuildDSN()
+	case "logs":
+		dsn = cfg.Postgres.Logs.BuildDSN()
+	// ในอนาคตถ้ามี DB อื่นๆ ก็มาเพิ่ม case ที่นี่
+	default:
+		log.Fatalf("❌ Unknown database name: '%s'. Must be one of 'primary', 'logs'", dbName)
+	}
 
 	log.Printf("📁 Using migration files from: '%s'", migrationPath)
 
+	// 5. สร้าง instance ของ migrate
+	// สังเกตว่า path จะต้องขึ้นต้นด้วย file://
 	m, err := migrate.New(fmt.Sprintf("file://%s", migrationPath), dsn)
 	if err != nil {
 		log.Fatalf("❌ Failed to create migrate instance: %v", err)
 	}
 
-	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		log.Fatalf("❌ Failed to apply migrations: %v", err)
+	// 6. รัน Action ตามที่ได้รับมา
+	var migrationErr error
+	switch action {
+	case "up":
+		migrationErr = m.Up()
+	case "down":
+		// สั่งให้ย้อนกลับไป 1 step
+		migrationErr = m.Steps(-1)
+	default:
+		log.Fatalf("❌ Unknown action: '%s'. Must be 'up' or 'down'", action)
 	}
 
-	log.Println("✅ Database migration completed successfully!")
+	// 7. จัดการผลลัพธ์
+	if migrationErr != nil && !errors.Is(migrationErr, migrate.ErrNoChange) {
+		log.Fatalf("❌ Failed to apply migrations: %v", migrationErr)
+	}
+
+	if errors.Is(migrationErr, migrate.ErrNoChange) {
+		log.Println("✅ No new migrations to apply.")
+	} else {
+		log.Println("✅ Database migration completed successfully!")
+	}
 }

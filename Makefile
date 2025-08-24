@@ -1,47 +1,50 @@
 # .PHONY declares targets that are not files. This prevents conflicts with files of the same name.
-.PHONY: setup run dev test test-integration test-coverage lint build build-dev build-prod clean db-migrate db-migrate-primary db-migrate-logs docker-dev-up docker-dev-d docker-dev-down docker-dev-logs docker-prod-up docker-prod-down docker-prod-logs docker-clean kill-port help
+.PHONY: setup test test-integration test-coverage lint clean db-migrate db-migrate-primary db-migrate-logs docker-dev-up docker-dev-d docker-dev-down docker-dev-logs docker-prod-up docker-prod-down docker-prod-logs docker-clean kill-port help
 
 # ====================================================================================
 # VARIABLES
 # ====================================================================================
 APP_NAME=go-template
-DOCKER_IMAGE_PROD=$(APP_NAME):latest
-DOCKER_IMAGE_DEV=$(APP_NAME):dev
 
 # ====================================================================================
-# DEVELOPMENT COMMANDS
+# LOCAL UTILITY COMMANDS (For Developer Experience)
 # ====================================================================================
-# Setup project dependencies
+# Setup project dependencies (For IDE and local tools)
 setup:
-	@echo "🔧 Setting up project dependencies..."
+	@echo "🔧 Setting up project dependencies for IDE..."
 	@go mod tidy
 	@go mod download
 
-# Run the application locally (without .env)
-run:
-	@echo "🚀 Starting Go application (without .env)..."
-	@go run ./cmd/api/main.go
+# Run linter on host machine
+lint:
+	@echo "🔍 Running linter..."
+	@golangci-lint run
 
-# Run the application locally with .env loaded
-dev:
-	@if [ ! -f .env ]; then echo "❌ .env file not found"; exit 1; fi
-	@echo "🔧 Loading environment variables from .env"
-	@set -a && source .env && set +a && echo "🚀 Starting Go application on port $${PORT}"
-	@set -a && source .env && set +a && echo "🌐 Access URL: http://localhost:$${PORT}"
-	@set -a && source .env && set +a && go run ./cmd/api/main.go
+# Clean build artifacts
+clean:
+	@echo "🧹 Cleaning up build artifacts..."
+	@rm -rf ./bin
+	@rm -f coverage.out
+
+# Kill processes using project ports
+kill-port:
+	@echo "🔪 Killing processes on project ports..."
+	@lsof -ti:9998 | xargs -r kill -9 2>/dev/null || echo "No process on port 9998"
+	@lsof -ti:9999 | xargs -r kill -9 2>/dev/null || echo "No process on port 9999"
+	@echo "✅ Port cleanup completed"
 
 # ====================================================================================
-# DOCKER DEVELOPMENT COMMANDS (แนะนำใช้)
+# DOCKER DEVELOPMENT COMMANDS (Workflow หลัก)
 # ====================================================================================
 # Start Docker development environment (with logs)
 docker-dev-up:
-	@echo "🐳 Starting Docker development environment..."
-	@docker compose -f docker-compose.dev.yml up --build
+	@echo "🐳 Starting Docker application service [app-dev]..."
+	@docker compose -f docker-compose.dev.yml up --build app-dev
 
 # Start Docker development in background (detached)
 docker-dev-d:
-	@echo "🐳 Starting Docker development environment in background..."
-	@docker compose -f docker-compose.dev.yml up --build -d
+	@echo "🐳 Starting Docker application service [app-dev] in background..."
+	@docker compose -f docker-compose.dev.yml up --build -d app-dev
 
 # Stop Docker development environment
 docker-dev-down:
@@ -54,62 +57,30 @@ docker-dev-logs:
 	@docker compose -f docker-compose.dev.yml logs -f app-dev
 
 # ====================================================================================
-# TESTING COMMANDS
+# DOCKER TESTING & DATABASE COMMANDS
 # ====================================================================================
-# Run unit tests
+# Run unit tests inside a Docker container
 test:
-	@echo "🧪 Running unit tests..."
-	@go test -v ./...
+	@echo "🧪 Running unit tests inside a Docker container..."
+	@docker compose -f docker-compose.dev.yml run --rm migrate go test -v ./...
 
-# Run integration tests
+# Run integration tests inside a Docker container
 test-integration:
-	@echo "🧪 Running integration tests..."
-	@go test -v ./tests/...
-
-# Run tests with coverage report
-test-coverage:
-	@echo "📊 Generating test coverage report..."
-	@go test -coverprofile=coverage.out ./...
-	@go tool cover -html=coverage.out
-
-# Run linter
-lint:
-	@echo "🔍 Running linter..."
-	@golangci-lint run
+	@echo "🧪 Running integration tests inside a Docker container..."
+	@docker compose -f docker-compose.dev.yml run --rm migrate go test -v ./tests/...
 
 # ====================================================================================
-# BUILD COMMANDS
+# DATABASE COMMANDS
 # ====================================================================================
-# Build for local development (fast compilation)
-build-dev:
-	@echo "🏗️  Building for development (fast compile)..."
-	@go build -gcflags="all=-N -l" -o ./bin/$(APP_NAME)-dev ./cmd/api/main.go
-
-# Build for production (optimized for size and performance)
-build-prod:
-	@echo "🏗️  Building for production (optimized)..."
-	@CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o ./bin/$(APP_NAME) ./cmd/api/main.go
-
-# Default build command
-build: build-prod
-
-# Clean build artifacts
-clean:
-	@echo "🧹 Cleaning up build artifacts..."
-	@rm -rf ./bin
-	@rm -f coverage.out
-
-# ====================================================================================
-# DATABASE COMMANDS (✨ ปรับปรุงใหม่!)
-# ====================================================================================
-# Run database migrations for a specific database.
-# Usage: make db-migrate db=<primary|logs|analytics>
+# Run database migrations for a specific database using a one-off Docker container.
+# Usage: make db-migrate db=primary
 db-migrate:
 ifndef db
 	$(error db is not set. Usage: make db-migrate db=<primary|logs|analytics>)
 endif
-	@echo "🗄️  Migrating database: [$(db)]..."
-	@go run ./cmd/migrate/main.go --db=$(db) --path=db/migrations/$(db)
+	@echo "🗄️  Migrating database: [$(db)] inside a Docker container..."
+	# ⭐️ เพิ่ม `go run ./cmd/migrate/main.go` เข้าไปตรงนี้! ⭐️
+	@docker compose -f docker-compose.dev.yml run --rm migrate go run ./cmd/migrate/main.go --db=$(db) --path=db/migrations/$(db)
 
 # --- Shortcuts for convenience ---
 db-migrate-primary:
@@ -117,7 +88,6 @@ db-migrate-primary:
 
 db-migrate-logs:
 	@make db-migrate db=logs
-
 
 # ====================================================================================
 # DOCKER PRODUCTION COMMANDS
@@ -137,15 +107,6 @@ docker-prod-logs:
 	@echo "📋 Viewing production logs..."
 	@docker compose -f docker-compose.prod.yml logs -f app
 
-# ====================================================================================
-# UTILITY COMMANDS
-# ====================================================================================
-# Kill processes using project ports
-kill-port:
-	@echo "🔪 Killing processes on project ports..."
-	@lsof -ti:8080 | xargs -r kill -9 2>/dev/null || echo "No process on port 8080"
-	@echo "✅ Port cleanup completed"
-
 # Clean up unused docker resources
 docker-clean:
 	@echo "🧹 Pruning Docker system..."
@@ -158,37 +119,24 @@ docker-clean:
 help:
 	@echo "📚 Available commands:"
 	@echo ""
-	@echo "🚀 Development:"
-	@echo "  setup              - Setup project dependencies"
-	@echo "  run                - Run locally (without .env)"
-	@echo "  dev                - Run locally with .env loaded"
+	@echo "🚀 Development (Docker Workflow):"
 	@echo "  docker-dev-up      - 🌟 Start Docker development (recommended)"
 	@echo "  docker-dev-d       - Start Docker development in background"
 	@echo "  docker-dev-down    - Stop Docker development"
 	@echo "  docker-dev-logs    - View Docker development logs"
 	@echo ""
-	@echo "🧪 Testing:"
-	@echo "  test               - Run unit tests"
-	@echo "  test-integration   - Run integration tests"
-	@echo "  test-coverage      - Run tests with coverage"
-	@echo "  lint               - Run linter"
-	@echo ""
-	@echo "🏗️  Building:"
-	@echo "  build-dev          - Build for development"
-	@echo "  build-prod         - Build for production"
-	@echo "  build              - Default build (production)"
-	@echo "  clean              - Clean build artifacts"
+	@echo "🧪 Testing (Docker Workflow):"
+	@echo "  test               - Run unit tests inside Docker"
+	@echo "  test-integration   - Run integration tests inside Docker"
 	@echo ""
 	@echo "🗄️  Database:"
-	@echo "  db-migrate-primary - Migrate the PRIMARY database"
-	@echo "  db-migrate-logs    - Migrate the LOGS database"
+	@echo "  db-migrate-primary - Migrate the PRIMARY database inside Docker"
+	@echo "  db-migrate-logs    - Migrate the LOGS database inside Docker"
 	@echo ""
-	@echo "🐳 Production:"
-	@echo "  docker-prod-up     - Start production environment"
-	@echo "  docker-prod-down   - Stop production environment"
-	@echo "  docker-prod-logs   - View production logs"
-	@echo ""
-	@echo "🛠️  Utilities:"
+	@echo "🛠️  Local Utilities:"
+	@echo "  setup              - Setup Go modules for your IDE"
+	@echo "  lint               - Run linter on host machine"
+	@echo "  clean              - Clean build artifacts"
 	@echo "  kill-port          - Kill processes on project ports"
 	@echo "  docker-clean       - Clean Docker resources"
 	@echo "  help               - Show this help"

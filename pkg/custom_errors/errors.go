@@ -1,6 +1,10 @@
 package custom_errors
 
-// ⭐️ 1. เอา Error Code ที่เป็นมาตรฐานของน้องมาไว้ที่นี่ ⭐️
+import "github.com/gofiber/fiber/v3"
+
+// ====================================================================================
+// Standard Error Codes
+// ====================================================================================
 const (
 	// Authentication
 	ErrUnauthorized     = "UNAUTHORIZED"
@@ -22,11 +26,13 @@ const (
 	ErrExternalAPI = "EXTERNAL_API_ERROR"
 )
 
-// ⭐️ 2. เอา SimpleError struct ของน้องมาใช้เป็น AppError ของเรา ⭐️
+// ====================================================================================
+// AppError Struct
+// ====================================================================================
 type AppError struct {
-	HTTPStatus int         `json:"-"` // เราจะเพิ่ม HTTPStatus เข้าไปเพื่อให้จัดการง่ายขึ้น และซ่อนจาก JSON
-	Message    string      `json:"message"`
+	HTTPStatus int         `json:"-"`
 	Code       string      `json:"code"`
+	Message    string      `json:"message"`
 	Details    interface{} `json:"details,omitempty"`
 }
 
@@ -34,33 +40,70 @@ func (e *AppError) Error() string {
 	return e.Message
 }
 
-// ⭐️ 3. ย้าย Helper Functions ทั้งหมดของน้องมาไว้ที่นี่! ⭐️
-// ทำให้การสร้าง Error สวยงามและเป็นมาตรฐานเดียวกันทั้งโปรเจกต์
 
-// --- Helper Functions ---
+// ====================================================================================
+// Base Constructors
+// ====================================================================================
 
+// New creates a new AppError without details.
 func New(status int, code, message string) *AppError {
-	// (อาจจะเพิ่ม checker เหมือนของน้องก็ได้)
 	return &AppError{HTTPStatus: status, Code: code, Message: message}
 }
 
+// NewWithDetails creates a new AppError with details.
 func NewWithDetails(status int, code, message string, details interface{}) *AppError {
 	return &AppError{HTTPStatus: status, Code: code, Message: message, Details: details}
 }
 
-// Helper ที่ใช้งานบ่อยๆ
-func NotFoundError(message string) *AppError {
-	return New(404, ErrNotFound, message)
-}
 
-func ValidationError(message string, details interface{}) *AppError {
-	return NewWithDetails(400, ErrValidation, message, details)
-}
+// ====================================================================================
+// Helper Functions (for easy use in Service layer)
+// ====================================================================================
+
+// --- Authentication Errors ---
 
 func UnauthorizedError(message string) *AppError {
-	return New(401, ErrUnauthorized, message)
+	return New(fiber.StatusUnauthorized, ErrUnauthorized, message) // 401
 }
 
+func PermissionDeniedError(message string) *AppError {
+	return New(fiber.StatusForbidden, ErrPermissionDenied, message) // 403
+}
+
+// --- Validation Errors ---
+
+func ValidationError(message string, details interface{}) *AppError {
+	return NewWithDetails(fiber.StatusBadRequest, ErrValidation, message, details) // 400
+}
+
+func InvalidFormatError(message string, details interface{}) *AppError {
+	return NewWithDetails(fiber.StatusBadRequest, ErrInvalidFormat, message, details) // 400
+}
+
+
+// --- Resource Errors ---
+
+func NotFoundError(message string) *AppError {
+	return New(fiber.StatusNotFound, ErrNotFound, message) // 404
+}
+
+func AlreadyExistsError(message string, details interface{}) *AppError {
+	return NewWithDetails(fiber.StatusConflict, ErrAlreadyExists, message, details) // 409
+}
+
+// --- System Errors ---
+
+// SystemError is for generic internal errors with a user-friendly message.
 func SystemError(message string) *AppError {
-	return New(500, ErrSystem, message)
+	return New(fiber.StatusInternalServerError, ErrSystem, message) // 500
+}
+
+// SystemErrorWithDetails is for internal errors where we want to log the original error.
+func SystemErrorWithDetails(message string, details interface{}) *AppError {
+	return NewWithDetails(fiber.StatusInternalServerError, ErrSystem, message, details) // 500
+}
+
+// ExternalAPIError is for errors when calling third-party services.
+func ExternalAPIError(message string, details interface{}) *AppError {
+	return NewWithDetails(fiber.StatusBadGateway, ErrExternalAPI, message, details) // 502
 }
