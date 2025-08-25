@@ -13,6 +13,8 @@ type Repository interface {
 	Create(d *Domain) error
 	GetByEmail(email string) (*Domain, error)
 	GetByID(id uint) (*Domain, error)
+	ListByPage(limit, offset int, sortField, sortDirection string) ([]*Domain, int, error)
+	ListByCursor(lastID uint, limit int, sortField, sortDirection string) ([]*Domain, error)
 }
 
 // Model คือ "ชุดเกราะ" สำหรับ GORM
@@ -69,6 +71,11 @@ func (r *repository) GetByID(id uint) (*Domain, error) {
 	if result.Error != nil {
 		return nil, result.Error
 	}
+	r.log.Dumpf(logger.LevelDebug, "result", gormModel)
+	loc, _ := time.LoadLocation("Asia/Bangkok")
+	fmt.Println("DB time (raw):", gormModel.CreatedAt)
+	fmt.Println("DB time (Bangkok):", gormModel.CreatedAt.In(loc))
+	//fmt.Println("------ggggg------", id, gormModel)
 	return gormModel.toDomain(), nil
 }
 
@@ -93,5 +100,70 @@ func (m *Model) toDomain() *Domain {
 		Status:       m.Status,
 		Role:         m.Role,
 		LastLoginAt:  m.LastLoginAt,
+		CreatedAt:    m.CreatedAt,
+		UpdatedAt:    m.UpdatedAt,
 	}
+}
+
+// ListByPage handles page-based pagination
+func (r *repository) ListByPage(limit, offset int, sortField, sortDirection string) ([]*Domain, int, error) {
+	var gormModels []Model
+	var totalCount int64
+
+	// 1. นับจำนวนทั้งหมดก่อน (สำหรับ Pagination)
+	if err := r.db.Model(&Model{}).Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// 2. สร้างคำสั่ง Order By
+	orderClause := fmt.Sprintf("%s %s", sortField, sortDirection)
+
+	// 3. ดึงข้อมูลตามหน้า
+	result := r.db.Order(orderClause).Limit(limit).Offset(offset).Find(&gormModels)
+	if result.Error != nil {
+		return nil, 0, result.Error
+	}
+
+	// 4. แปลง GORM Models กลับเป็น Domain Structs
+	domains := make([]*Domain, 0, len(gormModels))
+	for _, model := range gormModels {
+		domains = append(domains, model.toDomain())
+	}
+
+	return domains, int(totalCount), nil
+}
+
+// ListByCursor handles cursor-based pagination
+func (r *repository) ListByCursor(lastID uint, limit int, sortField, sortDirection string) ([]*Domain, error) {
+	var gormModels []Model
+
+	// สร้าง query เริ่มต้น
+	query := r.db.Model(&Model{})
+
+	// สร้างคำสั่ง Order By
+	orderClause := fmt.Sprintf("%s %s", sortField, sortDirection)
+	query = query.Order(orderClause)
+
+	// ⭐️ Logic ของ Cursor: ดึงข้อมูลที่ "ถัดจาก" รายการสุดท้ายที่เห็น ⭐️
+	if lastID > 0 {
+		// ตัวอย่างง่ายๆ คือดึง ID ที่มากกว่า ID สุดท้าย (ถ้าเรียงแบบ asc)
+		// ในชีวิตจริง Logic ตรงนี้จะซับซ้อนกว่านี้มาก
+		if sortField == "id" && sortDirection == "asc" {
+			query = query.Where("id > ?", lastID)
+		}
+	}
+
+	// ดึงข้อมูล
+	result := query.Limit(limit).Find(&gormModels)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+
+	// แปลง GORM Models กลับเป็น Domain Structs
+	domains := make([]*Domain, 0, len(gormModels))
+	for _, model := range gormModels {
+		domains = append(domains, model.toDomain())
+	}
+
+	return domains, nil
 }

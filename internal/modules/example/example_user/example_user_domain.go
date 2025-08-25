@@ -12,4 +12,6 @@ type Domain struct {
 	Status       string
 	Role         string
 	LastLoginAt  *time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }

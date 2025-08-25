@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/joho/godotenv"
@@ -19,6 +20,7 @@ import (
 	"go-template/pkg/logger"
 	"go-template/pkg/platform/postgres"
 	"go-template/pkg/response"
+	"go-template/pkg/validator"
 )
 
 // "ช่องรับ" ข้อมูล Build ที่จะถูกยิงเข้ามาโดย Linker Flags (-ldflags)
@@ -28,7 +30,20 @@ var (
 	CommitHash string
 )
 
+// ⭐️ 1. สร้าง "นาฬิกาเทียบเวลา" ของเราเป็นตัวแปร Global ⭐️
+var (
+	bangkokLocation *time.Location
+)
+
 func main() {
+
+	// --- ⭐️ 2. ตั้งค่า "นาฬิกาเทียบเวลา" เป็นอย่างแรกสุด! ⭐️ ---
+	var err error
+	bangkokLocation, err = time.LoadLocation("Asia/Bangkok")
+	if err != nil {
+		log.Fatalf("❌ Failed to load Bangkok time zone: %v", err)
+	}
+
 	// --- 0. โหลด Environment Variables (สำหรับ Local Dev) ---
 	if os.Getenv("DOCKER_ENV") != "true" {
 		if err := godotenv.Load(); err != nil {
@@ -51,12 +66,15 @@ func main() {
 	}
 	appLogger.Info("Logger initialized", "mode", cfg.Server.Mode)
 
+	appValidator := validator.New()
+
 	// --- 3. เชื่อมต่อ Platforms (Databases) ---
 	primaryDB, err := postgres.NewConnection(cfg.Postgres.Primary, appLogger)
 	if err != nil {
 		appLogger.Error("Failed to connect to primary database", err)
 		os.Exit(1)
 	}
+	// เชื่อมต่อ Database สำหรับเก็บ Logs (ถ้ามีการตั้งค่า)
 	var logsDB *gorm.DB
 	if cfg.Postgres.Logs.Host != "" {
 		logsDB, err = postgres.NewConnection(cfg.Postgres.Logs, appLogger)
@@ -73,7 +91,7 @@ func main() {
 
 	exampleUserRepo := example_user.NewExampleRepository(primaryDB, appLogger)
 	exampleUserService := example_user.NewExampleUserService(exampleUserRepo, cfg.Auth.JWTSecret, appLogger)
-	exampleUserHandler := example_user.NewExampleUserHandler(exampleUserService, appLogger)
+	exampleUserHandler := example_user.NewExampleUserHandler(exampleUserService, appLogger, bangkokLocation, appValidator)
 
 	// --- 5. ตั้งค่า Web Server (Fiber) ---
 	app := fiber.New(fiber.Config{
