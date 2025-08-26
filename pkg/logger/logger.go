@@ -1,33 +1,39 @@
+// pkg/logger/logger.go
 package logger
 
 // Logger คือ "สัญญาใจ" หรือ Interface ที่นักข่าวทุกคนต้องทำตาม
-// ไม่ว่าจะเป็นนักข่าวสายสวยงาม หรือสายโปรดักชัน ก็ต้องมี 4 ความสามารถนี้
 type Logger interface {
-	// Debug ใช้สำหรับ Log ที่มีรายละเอียดเยอะๆ สำหรับตอนพัฒนาเท่านั้น
+	// --- Structured Logging ---
 	Debug(msg string, args ...any)
-
-	// Info ใช้สำหรับ Log เหตุการณ์ทั่วไปที่เกิดขึ้น
 	Info(msg string, args ...any)
-
-	// Warn ใช้สำหรับ Log เหตุการณ์ที่น่าสงสัย แต่ยังไม่ถึงกับเป็น Error
-	Warn(msg string, args ...any)
-
-	// Error ใช้สำหรับ Log ข้อผิดพลาดที่เกิดขึ้นในระบบ
-	Error(msg string, err error, args ...any)
-	// Success ใช้สำหรับ Log ข้อความที่บ่งบอกว่าการทำงานสำเร็จ
 	Success(msg string, args ...any)
+	Warn(msg string, args ...any)
+	Error(msg string, err error, args ...any)
 
-	Print(msg string)
-	
-	Dump(data interface{})
+	// --- Simple Dumping ---
+	Dump(a ...any)
 
-	Dumpf(level string, msg string, data interface{})
+	// --- Highlight ---
+	Highlight(color string, msg string, data ...any)
 }
 
+// Color Constants - รหัสสี ANSI สำหรับตกแต่ง Log ให้น่าอ่าน
 const (
-	LevelDebug   = "DEBUG"
-	LevelInfo    = "INFO"
-	LevelWarn    = "WARN"
-	LevelError   = "ERROR"
-	LevelSuccess = "SUCCESS"
+	ColorReset = "\033[0m" // รีเซ็ตสีทั้งหมด กลับเป็นสีปกติ
+
+	// --- สีหลัก (ฉบับสว่าง/นีออน) ---
+	ColorRed    = "\033[91m" // สีแดงสว่าง (สำหรับ Error)
+	ColorGreen  = "\033[92m" // สีเขียวสว่าง (สำหรับ Success)
+	ColorYellow = "\033[93m" // สีเหลืองสว่าง (สำหรับ Warning)
+	ColorBlue   = "\033[94m" // สีน้ำเงินสว่าง (สำหรับ Debug)
+	ColorPurple = "\033[95m" // สีม่วงสว่าง (สำหรับ Dump ข้อมูล)
+	ColorCyan   = "\033[96m" // สีฟ้า/ไซแอนสว่าง (สำหรับ Info)
+
+	// --- สีเพิ่มเติม ---
+	ColorGray   = "\033[90m"       // สีเทาสว่าง
+	ColorWhite  = "\033[97m"       // สีขาวสว่าง
+	ColorOrange = "\033[38;5;208m" // สีส้ม (256-color)
+	ColorPink   = "\033[38;5;205m" // สีชมพู (256-color)
+	ColorLime   = "\033[38;5;154m" // สีเขียวมะนาว / นีออน (256-color)
+	ColorGold   = "\033[38;5;220m" // สีทอง (256-color)
 )

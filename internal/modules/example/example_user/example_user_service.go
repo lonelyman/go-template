@@ -1,12 +1,15 @@
 package example_user
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"go-template/pkg/auth"
 	"go-template/pkg/custom_errors"
 	"go-template/pkg/logger"
+	"strconv"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -16,20 +19,29 @@ import (
 type Service interface {
 	CreateUser(userToCreate *Domain, plainPassword string) (*Domain, error)
 	GetUserByID(id uint) (*Domain, error)
-	ListUsersByPage(limit, offset int, sort string) ([]*Domain, int, error)
-	ListUsersByCursor(cursor string, limit int, sort string) ([]*Domain, string, bool, error)
+	ListUsersByPage(limit, offset int, sort, search string) ([]*Domain, int, error)
+	ListUsersByCursor(cursor string, limit int, sort, search string) ([]*Domain, string, bool, error)
+	UpdateUser(id uint, req *UpdateUserRequest) (*Domain, error)
+	DeleteUser(id uint) error
+	ChangePassword(id uint, oldPassword, newPassword string) error
+	Login(email, password string) (string, error)
 }
 
 // service คือ struct ที่ทำงานจริง
 type service struct {
-	repo      Repository
-	jwtSecret string
-	log       logger.Logger
+	repo Repository
+	auth auth.Service
+	log  logger.Logger
+}
+
+type cursorInfo struct {
+	LastID    uint
+	LastValue string // สามารถเก็บได้ทั้ง name หรือ created_at
 }
 
 // NewExampleUserService คือโรงงานสร้าง Service
-func NewExampleUserService(repo Repository, jwtSecret string, log logger.Logger) Service {
-	return &service{repo: repo, jwtSecret: jwtSecret, log: log}
+func NewExampleUserService(repo Repository, auth auth.Service, log logger.Logger) Service {
+	return &service{repo: repo, auth: auth, log: log}
 }
 
 // --- Implementation ---
@@ -47,7 +59,7 @@ func (s *service) CreateUser(userToCreate *Domain, plainPassword string) (*Domai
 	}
 
 	// 2. Hash Password (ใช้ password ดิบๆ ที่รับเข้ามา)
-	hashedPassword, err := auth.HashPassword(plainPassword)
+	hashedPassword, err := s.auth.HashPassword(plainPassword)
 	if err != nil {
 		return nil, custom_errors.SystemErrorWithDetails("ไม่สามารถเข้ารหัสรหัสผ่านได้", err.Error())
 	}
@@ -61,7 +73,7 @@ func (s *service) CreateUser(userToCreate *Domain, plainPassword string) (*Domai
 	if err := s.repo.Create(userToCreate); err != nil {
 		return nil, custom_errors.SystemErrorWithDetails("ไม่สามารถสร้างผู้ใช้งานได้", err.Error())
 	}
-	s.log.Dumpf(logger.LevelSuccess, "Full user object after creation:", userToCreate)
+	s.log.Dump("Full user object after creation:", userToCreate)
 	// 5. คืนค่า Domain object ที่สมบูรณ์แล้ว (ตอนนี้มี ID, CreatedAt แล้ว) กลับไป
 	return userToCreate, nil
 }
@@ -88,16 +100,16 @@ func (s *service) GetUserByID(id uint) (*Domain, error) {
 }
 
 // ListUsersByPage handles page-based pagination and sorting.
-func (s *service) ListUsersByPage(limit, offset int, sort string) ([]*Domain, int, error) {
+func (s *service) ListUsersByPage(limit, offset int, sort, search string) ([]*Domain, int, error) {
 	// 1. "แปลภาษาเข็มทิศ" และตรวจสอบความปลอดภัย
-	sortField, sortDirection, err := parseSortString(sort)
+	sortField, sortDirection, err := s.parseSortString(sort)
 	if err != nil {
 		// ถ้า Client ส่ง sort field ที่ไม่ได้รับอนุญาตมา ให้คืนค่า error
 		return nil, 0, custom_errors.ValidationError("Sort parameter ไม่ถูกต้อง", err.Error())
 	}
 
 	// 2. เรียกใช้ Repository เพื่อดึงข้อมูลและจำนวนทั้งหมด
-	userDomains, totalCount, repoErr := s.repo.ListByPage(limit, offset, sortField, sortDirection)
+	userDomains, totalCount, repoErr := s.repo.ListByPage(limit, offset, sortField, sortDirection, search)
 	if repoErr != nil {
 		return nil, 0, custom_errors.SystemErrorWithDetails("เกิดข้อผิดพลาดในการดึงข้อมูลผู้ใช้", repoErr.Error())
 	}
@@ -106,64 +118,235 @@ func (s *service) ListUsersByPage(limit, offset int, sort string) ([]*Domain, in
 }
 
 // ListUsersByCursor handles cursor-based pagination and sorting.
-func (s *service) ListUsersByCursor(cursor string, limit int, sort string) ([]*Domain, string, bool, error) {
-	// ⭐️⭐️⭐️ หมายเหตุ: การ Implement Cursor-based Pagination จริงๆ นั้นซับซ้อนมาก
-	// จะต้องมีการเข้ารหัส/ถอดรหัส cursor (เช่น base64 ของ ID หรือ Timestamp)
-	// และ Logic การ query ใน Repository ก็จะซับซ้อนกว่านี้มาก
-	//
-	// โค้ดด้านล่างนี้เป็นแค่ "โครงสร้างตัวอย่าง" เพื่อให้เห็นภาพรวมเท่านั้นนะ!
-	// ⭐️⭐️⭐️
+func (s *service) ListUsersByCursor(cursor string, limit int, sort, search string) (results []*Domain, nextCursor string, hasMore bool, err error) {
+	s.log.Debug("Service: ListUsersByCursor started", "cursor", cursor, "limit", limit, "sort", sort, "search", search)
 
-	sortField, sortDirection, err := parseSortString(sort)
-	if err != nil {
-		return nil, "", false, custom_errors.ValidationError("Sort parameter ไม่ถูกต้อง", err.Error())
+	sortField, sortDirection, parseErr := s.parseSortString(sort)
+	if parseErr != nil {
+		appErr := custom_errors.ValidationError("Sort parameter ไม่ถูกต้อง", parseErr.Error())
+		return nil, "", false, appErr
 	}
 
-	// (ในชีวิตจริง เราจะต้องถอดรหัส cursor ก่อน)
-	// lastID, _ := decodeCursor(cursor)
+	cursorData, decodeErr := s.decodeCursor(cursor)
+	if decodeErr != nil {
+		appErr := custom_errors.ValidationError("Cursor ไม่ถูกต้อง", decodeErr.Error())
+		return nil, "", false, appErr
+	}
 
-	userDomains, repoErr := s.repo.ListByCursor(0, limit, sortField, sortDirection) // ส่ง lastID เข้าไป
+	fetchLimit := limit + 1
+	userDomains, repoErr := s.repo.ListByCursor(cursorData, fetchLimit, sortField, sortDirection, search)
 	if repoErr != nil {
-		return nil, "", false, custom_errors.SystemErrorWithDetails("เกิดข้อผิดพลาดในการดึงข้อมูลผู้ใช้", repoErr.Error())
+		appErr := custom_errors.SystemErrorWithDetails("เกิดข้อผิดพลาดในการดึงข้อมูลผู้ใช้", repoErr.Error())
+		return nil, "", false, appErr
 	}
 
-	// (ในชีวิตจริง เราจะต้องสร้าง nextCursor และเช็ค hasMore จากข้อมูลที่ได้)
-	nextCursor := "next_cursor_placeholder"
-	hasMore := len(userDomains) == limit
+	if len(userDomains) > limit {
+		hasMore = true
+		results = userDomains[:limit]
+		lastItemInResults := results[len(results)-1]
+		nextCursor = s.encodeCursor(sortField, lastItemInResults)
+	} else {
+		hasMore = false
+		results = userDomains
+		nextCursor = ""
+	}
 
-	return userDomains, nextCursor, hasMore, nil
+	return results, nextCursor, hasMore, nil
 }
 
-// --- Private Helper ---
-
-// parseSortString คือ "นักแปลภาษาเข็มทิศ"
-// มันจะแกะ string "field:direction" ออกมา และตรวจสอบกับ "แผนที่" (whitelist)
-func parseSortString(sort string) (field string, direction string, err error) {
-	// ⭐️ แผนที่: กำหนดว่า Client สามารถเรียงข้อมูลจาก field ไหนได้บ้าง
-	// เพื่อป้องกันการยิง query ที่ไม่เหมาะสม (เช่น เรียงจาก password_hash)
-	allowedSortFields := map[string]bool{
-		"id":         true,
-		"name":       true,
-		"email":      true,
-		"created_at": true,
-		"updated_at": true,
+// UpdateUser handles the business logic for updating a user.
+func (s *service) UpdateUser(id uint, req *UpdateUserRequest) (*Domain, error) {
+	// 1. ดึงข้อมูลผู้ใช้คนปัจจุบันจาก Repo มาก่อน เพื่อให้แน่ใจว่ามีตัวตนอยู่จริง
+	existingUser, err := s.repo.GetByID(id)
+	if err != nil {
+		// ถ้า repo คืนค่า gorm.ErrRecordNotFound มา เราจะแปลงเป็น NotFoundError ของเรา
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, custom_errors.NotFoundError(fmt.Sprintf("ไม่พบผู้ใช้งาน ID: %d", id))
+		}
+		// ถ้าเป็น error อื่น
+		return nil, custom_errors.SystemErrorWithDetails("เกิดข้อผิดพลาดในการค้นหาข้อมูลผู้ใช้", err.Error())
 	}
 
+	// 2. ⭐️ "รวมร่าง" ข้อมูล: เอาข้อมูลใหม่จาก req (ถ้ามี) ไปทับข้อมูลเก่า ⭐️
+	// เราจะเช็คว่า pointer ไม่ใช่ nil ก่อนที่จะอัปเดต
+	if req.Name != nil {
+		existingUser.Name = *req.Name
+	}
+	// 2. ⭐️⭐️⭐️ เพิ่ม Logic การตรวจสอบข้อมูลซ้ำ! ⭐️⭐️⭐️
+	// เช็คว่ามีการส่งอีเมลใหม่มาหรือไม่ และอีเมลนั้นไม่ตรงกับของเดิม
+	if req.Email != nil && *req.Email != existingUser.Email {
+		// ถ้ามีการเปลี่ยนอีเมล ให้ไปเช็คว่าอีเมลใหม่นี้มีคนอื่นใช้แล้วหรือยัง
+		userWithNewEmail, err := s.repo.GetByEmail(*req.Email)
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, custom_errors.SystemErrorWithDetails("เกิดข้อผิดพลาดในการตรวจสอบอีเมลซ้ำ", err.Error())
+		}
+		// ถ้าเจอ user คนอื่นที่ใช้อีเมลนี้อยู่แล้ว
+		if userWithNewEmail != nil {
+			return nil, custom_errors.AlreadyExistsError("อีเมลนี้ถูกใช้งานโดยผู้ใช้อื่นแล้ว", nil)
+		}
+		// ถ้าไม่เจอ ก็อัปเดตอีเมลได้
+		existingUser.Email = *req.Email
+	}
+	if req.Status != nil {
+		existingUser.Status = *req.Status
+	}
+
+	// 3. สั่งให้ Repo บันทึกข้อมูลที่อัปเดตแล้ว
+	if err := s.repo.Update(existingUser); err != nil {
+		return nil, custom_errors.SystemErrorWithDetails("ไม่สามารถอัปเดตข้อมูลผู้ใช้ได้", err.Error())
+	}
+
+	// 4. คืนค่า Domain object ฉบับล่าสุดกลับไปให้ Handler
+	return existingUser, nil
+}
+
+// DeleteUser handles the business logic for deleting a user.
+func (s *service) DeleteUser(id uint) error {
+	// 1. ตรวจสอบให้แน่ใจก่อนว่ามี User ID นี้อยู่จริงหรือไม่
+	// เพื่อที่เราจะสามารถคืนค่า 404 Not Found ที่ถูกต้องกลับไปได้
+	_, err := s.repo.GetByID(id)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return custom_errors.NotFoundError(fmt.Sprintf("ไม่พบผู้ใช้งาน ID: %d ที่ต้องการลบ", id))
+		}
+		return custom_errors.SystemErrorWithDetails("เกิดข้อผิดพลาดในการค้นหาข้อมูลผู้ใช้ก่อนลบ", err.Error())
+	}
+
+	// 2. ถ้ามีอยู่จริง ก็สั่งให้ Repo ทำการลบ
+	if err := s.repo.Delete(id); err != nil {
+		return custom_errors.SystemErrorWithDetails("ไม่สามารถลบข้อมูลผู้ใช้ได้", err.Error())
+	}
+
+	// 3. ถ้าสำเร็จ ก็ไม่ต้องคืนค่าอะไรกลับไป (return nil)
+	return nil
+}
+
+// ChangePassword handles the business logic for changing a user's password.
+func (s *service) ChangePassword(id uint, oldPassword, newPassword string) error {
+	// 1. ดึงข้อมูลผู้ใช้คนปัจจุบันจาก Repo มาก่อน
+	user, err := s.repo.GetByID(id)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return custom_errors.NotFoundError(fmt.Sprintf("ไม่พบผู้ใช้งาน ID: %d", id))
+		}
+		return custom_errors.SystemErrorWithDetails("เกิดข้อผิดพลาดในการค้นหาข้อมูลผู้ใช้", err.Error())
+	}
+
+	// 2. ⭐️ "ตรวจสอบกุญแจเก่า": เปรียบเทียบรหัสผ่านเก่าที่ส่งมากับ Hash ใน DB ⭐️
+	// เราจะเรียกใช้ "บอดี้การ์ด" (pkg/auth) ของเรามาช่วย
+	if err := s.auth.ComparePassword(user.PasswordHash, oldPassword); err != nil {
+		// ถ้า err ไม่ใช่ nil แสดงว่ารหัสผ่านเก่าไม่ถูกต้อง!
+		return custom_errors.UnauthorizedError("รหัสผ่านเดิมไม่ถูกต้อง")
+	}
+
+	// 3. "สร้างกุญแจใหม่": Hash รหัสผ่านใหม่
+	newHashedPassword, err := s.auth.HashPassword(newPassword)
+	if err != nil {
+		return custom_errors.SystemErrorWithDetails("ไม่สามารถเข้ารหัสรหัสผ่านใหม่ได้", err.Error())
+	}
+
+	// 4. อัปเดต "กุญแจ" ใน object ของเรา
+	user.PasswordHash = newHashedPassword
+
+	// 5. สั่งให้ Repo บันทึกการเปลี่ยนแปลง
+	if err := s.repo.Update(user); err != nil {
+		return custom_errors.SystemErrorWithDetails("ไม่สามารถบันทึกรหัสผ่านใหม่ได้", err.Error())
+	}
+
+	// 6. ถ้าสำเร็จ ก็ไม่ต้องคืนค่าอะไรกลับไป (return nil)
+	return nil
+}
+
+// Login handles the business logic for user authentication.
+func (s *service) Login(email, password string) (string, error) {
+	// 1. ค้นหาผู้ใช้ด้วยอีเมลจาก Repo
+	user, err := s.repo.GetByEmail(email)
+	if err != nil {
+		// ถ้าเจอ error อื่นที่ไม่ใช่ "หาไม่เจอ" ให้ถือว่าเป็น System Error
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", custom_errors.SystemErrorWithDetails("เกิดข้อผิดพลาดในการค้นหาข้อมูลผู้ใช้", err.Error())
+		}
+		// ถ้า "หาไม่เจอ" ให้คืนค่า Unauthorized เพื่อความปลอดภัย
+		// (เราจะไม่บอก Hacker ว่า "อีเมลนี้ไม่มีในระบบ" แต่จะบอกแค่ว่า "ข้อมูลไม่ถูกต้อง")
+		return "", custom_errors.UnauthorizedError("อีเมลหรือรหัสผ่านไม่ถูกต้อง")
+	}
+
+	// 2. ⭐️ "ตรวจสอบตัวตน": เปรียบเทียบรหัสผ่านที่ส่งมากับ Hash ใน DB ⭐️
+	// เราจะเรียกใช้ "บอดี้การ์ด" (pkg/auth) ของเรามาช่วย
+	if err := s.auth.ComparePassword(user.PasswordHash, password); err != nil {
+		// ถ้า err ไม่ใช่ nil แสดงว่ารหัสผ่านไม่ถูกต้อง!
+		return "", custom_errors.UnauthorizedError("อีเมลหรือรหัสผ่านไม่ถูกต้อง")
+	}
+
+	// 3. "สร้างกุญแจ": ถ้าทุกอย่างถูกต้อง ให้สร้าง JWT Token
+	// (เราจะต้องไปสร้างฟังก์ชัน GenerateToken กันในขั้นตอนต่อไปนะ!)
+	token, err := s.auth.GenerateToken(user.ID, user.Role)
+	if err != nil {
+		return "", custom_errors.SystemErrorWithDetails("ไม่สามารถสร้าง Token ได้", err.Error())
+	}
+
+	// 4. คืนค่า "กุญแจ" กลับไปให้ Handler
+	return token, nil
+}
+
+// --- Private Helpers ---
+
+func (s *service) parseSortString(sort string) (field string, direction string, err error) {
+	allowedSortFields := map[string]bool{
+		"id": true, "name": true, "email": true, "created_at": true, "updated_at": true,
+	}
 	parts := strings.Split(sort, ":")
 	if len(parts) != 2 {
-		return "", "", errors.New("invalid sort format, must be 'field:direction'")
+		return "", "", errors.New("invalid sort format")
 	}
-
-	field = parts[0]
-	direction = parts[1]
-
+	field, direction = parts[0], parts[1]
 	if !allowedSortFields[field] {
 		return "", "", errors.New("sorting by this field is not allowed: " + field)
 	}
-
 	if direction != "asc" && direction != "desc" {
-		return "", "", errors.New("invalid sort direction, must be 'asc' or 'desc'")
+		return "", "", errors.New("invalid sort direction")
+	}
+	return field, direction, nil
+}
+
+// ✨ อัปเกรด "เครื่องมือ" สร้างและอ่านที่คั่นหนังสือ ✨
+func (s *service) encodeCursor(sortField string, lastItem *Domain) string {
+	var valueToEncode string
+	switch sortField {
+	case "name":
+		valueToEncode = fmt.Sprintf("%s,%d", lastItem.Name, lastItem.ID)
+	case "created_at":
+		valueToEncode = fmt.Sprintf("%s,%d", lastItem.CreatedAt.Format(time.RFC3339Nano), lastItem.ID)
+	default: // id
+		valueToEncode = fmt.Sprintf("%d", lastItem.ID)
+	}
+	return base64.StdEncoding.EncodeToString([]byte(valueToEncode))
+}
+
+func (s *service) decodeCursor(encodedCursor string) (*cursorInfo, error) {
+	if encodedCursor == "" {
+		return &cursorInfo{LastID: 0, LastValue: ""}, nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encodedCursor)
+	if err != nil {
+		return nil, errors.New("invalid base64 format")
+	}
+	parts := strings.Split(string(decoded), ",")
+
+	if len(parts) == 1 { // id only
+		id, err := strconv.ParseUint(parts[0], 10, 64)
+		if err != nil {
+			return nil, errors.New("invalid cursor id content")
+		}
+		return &cursorInfo{LastID: uint(id)}, nil
+	}
+	if len(parts) == 2 { // value + id
+		id, err := strconv.ParseUint(parts[1], 10, 64)
+		if err != nil {
+			return nil, errors.New("invalid cursor id content")
+		}
+		return &cursorInfo{LastValue: parts[0], LastID: uint(id)}, nil
 	}
 
-	return field, direction, nil
+	return nil, errors.New("invalid cursor format")
 }

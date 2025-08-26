@@ -2,66 +2,51 @@
 package logger
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 )
 
-// slogLogger คือนักข่าวสายโปรดักชัน ที่รายงานทุกอย่างเป็น JSON
 type slogLogger struct {
 	logger *slog.Logger
 }
 
 // NewSlogLogger คือโรงงานสร้างนักข่าวสายโปรดักชัน
-// มันจะสร้าง Logger ที่พิมพ์ JSON ออกไปที่ Standard Output
 func NewSlogLogger() Logger {
 	return &slogLogger{
-		logger: slog.New(slog.NewJSONHandler(os.Stdout, nil)),
+		logger: slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+			AddSource: true, // บอกให้ slog แสดงไฟล์และบรรทัดให้ด้วย
+		})),
 	}
 }
 
-// --- Implementation of Logger interface ---
-
-func (l *slogLogger) Debug(msg string, args ...any) {
-	l.logger.Debug(msg, args...)
-}
-
-func (l *slogLogger) Info(msg string, args ...any) {
-	l.logger.Info(msg, args...)
-}
-
-func (l *slogLogger) Warn(msg string, args ...any) {
-	l.logger.Warn(msg, args...)
-}
-
+// --- Structured Logging Methods ---
+func (l *slogLogger) Debug(msg string, args ...any)   { l.logger.Debug(msg, args...) }
+func (l *slogLogger) Info(msg string, args ...any)    { l.logger.Info(msg, args...) }
+func (l *slogLogger) Success(msg string, args ...any) { l.logger.Info(msg, args...) } // Success is logged as Info
+func (l *slogLogger) Warn(msg string, args ...any)    { l.logger.Warn(msg, args...) }
 func (l *slogLogger) Error(msg string, err error, args ...any) {
-	// slog จะฉลาดพอที่จะรู้ว่าถ้ามี key ชื่อ "err" มันจะแสดงผลให้สวยงามเป็นพิเศษ
 	allArgs := append(args, "err", err)
 	l.logger.Error(msg, allArgs...)
 }
 
-func (l *slogLogger) Success(msg string, args ...any) {
-	l.logger.Info(msg, args...)
-}
-
-func (l *slogLogger) Print(msg string) {
-	l.logger.Debug(msg)
-}
-
-func (l *slogLogger) Dump(data interface{}) {
-	l.logger.Debug("dump_data", data)
-}
-
-func (l *slogLogger) Dumpf(level string, msg string, data interface{}) {
-	switch level {
-	case LevelDebug:
-		l.logger.Debug(msg, "dumpf_data", data)
-	case LevelInfo:
-		l.logger.Info(msg, "dumpf_data", data)
-	case LevelWarn:
-		l.logger.Warn(msg, "dumpf_data", data)
-	case LevelError:
-		l.logger.Error(msg, "dumpf_data", data)
-	case LevelSuccess:
-		l.logger.Info(msg, "dumpf_data", data)
+// --- Simple Dumping Method ---
+func (l *slogLogger) Dump(a ...any) {
+	args := make([]any, 0, len(a)*2)
+	for i, v := range a {
+		key := fmt.Sprintf("dump_%d", i+1)
+		args = append(args, key, v)
 	}
+	l.logger.Debug("Data dump", args...)
+}
+
+// --- Highlight Method ---
+func (l *slogLogger) Highlight(color string, msg string, data ...any) {
+	args := make([]any, 0, len(data)*2+2)
+	args = append(args, "highlight_color", color)
+	for i, v := range data {
+		key := fmt.Sprintf("dump_%d", i+1)
+		args = append(args, key, v)
+	}
+	l.logger.Debug(msg, args...)
 }

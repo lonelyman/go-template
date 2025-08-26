@@ -153,18 +153,62 @@ func parseCommaSeparatedVmsg(tag string) map[string]string {
 }
 
 // generateDefaultErrorMessage creates a user-friendly error message if no custom message is provided.
+// If the tag is unknown, it returns the original error message from the validator library.
 func generateDefaultErrorMessage(tag, param string, originalError error) string {
 	switch tag {
-	// ... (case อื่นๆ เหมือนเดิม) ...
+	// --- Rules ทั่วไป ---
+	case "required":
+		return "ฟิลด์นี้จำเป็นต้องระบุ"
 	case "email":
 		return "ต้องเป็นรูปแบบอีเมลที่ถูกต้อง"
+	case "url":
+		return "ต้องเป็น URL ที่ถูกต้อง"
+	case "uuid":
+		return "ต้องเป็น UUID ที่ถูกต้อง"
 
-	// ⭐️ เพิ่ม Default Message สำหรับกฎใหม่ของเรา ⭐️
+	// --- Rules เกี่ยวกับความยาว (สำหรับ String, Slice, Map) ---
+	case "min":
+		return fmt.Sprintf("ต้องมีขนาดอย่างน้อย %s", param)
+	case "max":
+		return fmt.Sprintf("ต้องมีขนาดไม่เกิน %s", param)
+	case "len":
+		return fmt.Sprintf("ต้องมีขนาดเท่ากับ %s พอดี", param)
+
+	// --- Rules เกี่ยวกับค่าตัวเลข ---
+	case "numeric":
+		return "ต้องเป็นตัวเลขเท่านั้น"
+	case "gt":
+		return fmt.Sprintf("ต้องมีค่ามากกว่า %s", param)
+	case "gte":
+		return fmt.Sprintf("ต้องมีค่าอย่างน้อย %s", param)
+	case "lt":
+		return fmt.Sprintf("ต้องมีค่าน้อยกว่า %s", param)
+	case "lte":
+		return fmt.Sprintf("ต้องมีค่าไม่เกิน %s", param)
+
+	// --- Rules เปรียบเทียบ ---
+	case "eq":
+		return fmt.Sprintf("ต้องมีค่าเท่ากับ %s", param)
+	case "ne":
+		return fmt.Sprintf("ต้องมีค่าไม่เท่ากับ %s", param)
+	case "eqfield":
+		return fmt.Sprintf("ค่าต้องตรงกับฟิลด์ %s", param)
+
+	// --- Rules เกี่ยวกับรูปแบบ String ---
+	case "alphanum":
+		return "ต้องเป็นตัวอักษรหรือตัวเลขเท่านั้น"
+	case "alpha":
+		return "ต้องเป็นตัวอักษรเท่านั้น"
+
+	// --- Rules ที่เราสร้างเอง ---
+	case "datetime":
+		return fmt.Sprintf("ต้องเป็นวันที่และเวลาในรูปแบบที่ถูกต้อง (%s)", param)
 	case "sort_format":
 		return "รูปแบบการเรียงข้อมูลต้องเป็น 'field:direction' (เช่น id:asc)"
 
 	// --- Fallback ---
 	default:
+		// ถ้าไม่รู้จัก tag ไหนเลย ก็ให้คืนค่า Error ดั้งเดิมจาก library กลับไป
 		return originalError.Error()
 	}
 }
