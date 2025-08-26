@@ -9,32 +9,75 @@ import (
 	"strings"
 )
 
-// ANSI Color Codes (Bright versions)
-const (
-	ColorReset  = "\033[0m"
-	ColorRed    = "\033[91m"
-	ColorGreen  = "\033[92m"
-	ColorYellow = "\033[93m"
-	ColorBlue   = "\033[94m"
-	ColorCyan   = "\033[96m"
-	ColorPurple = "\033[95m"
-)
-
 type prettyLogger struct{}
 
+// NewPrettyLogger คือโรงงานสร้างนักข่าวสายสวยงาม
 func NewPrettyLogger() Logger {
 	return &prettyLogger{}
 }
 
-// ✨ อัปเกรด getFileInfo ให้ฉลาดขึ้น
-// เราจะหา Caller ที่อยู่นอก package 'logger' ของเรา
+// print เป็นผู้ช่วยกลางที่ทำให้โค้ดไม่ซ้ำซ้อน
+func (l *prettyLogger) print(color, emoji, level, msg string, args ...any) {
+	location := getFileInfo()
+	formattedArgs := formatArgs(args...)
+	log.Printf("%s%s %-7s %s: %s%s%s", color, emoji, level, location, msg, formattedArgs, ColorReset)
+}
+
+// --- Structured Logging Methods ---
+func (l *prettyLogger) Debug(msg string, args ...any) {
+	l.print(ColorBlue, "🐛", "DEBUG", msg, args...)
+}
+func (l *prettyLogger) Info(msg string, args ...any) {
+	l.print(ColorCyan, "ℹ️", "INFO", msg, args...)
+}
+func (l *prettyLogger) Success(msg string, args ...any) {
+	l.print(ColorGreen, "✅", "SUCCESS", msg, args...)
+}
+func (l *prettyLogger) Warn(msg string, args ...any) {
+	l.print(ColorYellow, "⚠️", "WARN", msg, args...)
+}
+func (l *prettyLogger) Error(msg string, err error, args ...any) {
+	allArgs := append(args, "err", err)
+	l.print(ColorRed, "❌", "ERROR", msg, allArgs...)
+}
+
+// --- Simple Dumping Method ---
+func (l *prettyLogger) Dump(a ...any) {
+	location := getFileInfo()
+	var messages []string
+	for _, v := range a {
+		jsonBytes, err := json.MarshalIndent(v, "", "  ")
+		if err != nil {
+			messages = append(messages, fmt.Sprintf("<unmarshallable: %v>", err))
+		} else {
+			messages = append(messages, string(jsonBytes))
+		}
+	}
+	log.Printf("%s🔍 DUMP  %s:\n%s%s", ColorPurple, location, strings.Join(messages, "\n"), ColorReset)
+}
+
+// --- Highlight Method ---
+func (l *prettyLogger) Highlight(color string, msg string, data ...any) {
+	location := getFileInfo()
+	var messages []string
+	for _, v := range data {
+		jsonBytes, err := json.MarshalIndent(v, "", "  ")
+		if err != nil {
+			messages = append(messages, fmt.Sprintf("<unmarshallable: %v>", err))
+		} else {
+			messages = append(messages, string(jsonBytes))
+		}
+	}
+	log.Printf("%s🎨 HIGHLIGHT %s: %s\n%s%s", color, location, msg, strings.Join(messages, "\n"), ColorReset)
+}
+
+// --- Helpers ---
 func getFileInfo() string {
-	for i := 2; i < 15; i++ {
+	for i := 3; i < 15; i++ {
 		_, file, line, ok := runtime.Caller(i)
 		if !ok {
 			break
 		}
-		// ถ้าเจอไฟล์ที่ไม่ได้อยู่ใน package logger ก็คือไฟล์ที่เรียกเราจริงๆ!
 		if !strings.Contains(file, "pkg/logger") {
 			parts := strings.Split(file, "/")
 			return fmt.Sprintf("%s:%d", parts[len(parts)-1], line)
@@ -43,14 +86,12 @@ func getFileInfo() string {
 	return "???:0"
 }
 
-// ✨ อัปเกรดให้เข้าใจ key-value pairs แบบ slog
 func formatArgs(args ...any) string {
 	if len(args) == 0 {
 		return ""
 	}
 	var builder strings.Builder
-	builder.WriteString(" |") // ใช้ | คั่นระหว่าง message หลักกับ args
-
+	builder.WriteString(" |")
 	for i := 0; i < len(args); i += 2 {
 		key := args[i]
 		var value any = "(MISSING)"
@@ -60,82 +101,4 @@ func formatArgs(args ...any) string {
 		builder.WriteString(fmt.Sprintf(" %s=%v", key, value))
 	}
 	return builder.String()
-}
-
-func (l *prettyLogger) Debug(msg string, args ...any) {
-	location := getFileInfo()
-	formattedArgs := formatArgs(args...)
-	log.Printf("%s🐛 DEBUG %s: %s%s%s", ColorBlue, location, msg, formattedArgs, ColorReset)
-}
-
-func (l *prettyLogger) Info(msg string, args ...any) {
-	location := getFileInfo()
-	formattedArgs := formatArgs(args...)
-	log.Printf("%sℹ️  INFO  %s: %s%s%s", ColorCyan, location, msg, formattedArgs, ColorReset)
-}
-
-func (l *prettyLogger) Success(msg string, args ...any) {
-	location := getFileInfo()
-	formattedArgs := formatArgs(args...)
-	log.Printf("%s✅ SUCCESS %s: %s%s%s", ColorGreen, location, msg, formattedArgs, ColorReset)
-}
-
-func (l *prettyLogger) Warn(msg string, args ...any) {
-	location := getFileInfo()
-	formattedArgs := formatArgs(args...)
-	log.Printf("%s⚠️  WARN  %s: %s%s%s", ColorYellow, location, msg, formattedArgs, ColorReset)
-}
-
-func (l *prettyLogger) Error(msg string, err error, args ...any) {
-	location := getFileInfo()
-	// สำหรับ Error เราจะเพิ่ม field 'err' เข้าไปใน args ด้วย
-	allArgs := append(args, "err", err)
-	formattedArgs := formatArgs(allArgs...)
-	log.Printf("%s❌ ERROR %s: %s%s%s", ColorRed, location, msg, formattedArgs, ColorReset)
-}
-
-func (l *prettyLogger) Print(msg string) {
-	location := getFileInfo()
-	// เลือกสีตาม Level
-	color := ColorPurple
-	log.Printf("%s🔍 Print  %s: %s\n%s%s", color, location, msg, ColorReset)
-}
-
-func (l *prettyLogger) Dump(data interface{}) {
-	location := getFileInfo()
-	// แปลง object เป็น JSON สวยๆ
-	jsonBytes, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		l.Error("Failed to dump data", err)
-		return
-	}
-	color := ColorPurple
-
-	log.Printf("%s🔍 DUMP  %s: %s\n%s%s", color, location, string(jsonBytes), ColorReset)
-}
-
-func (l *prettyLogger) Dumpf(level string, msg string, data interface{}) {
-	location := getFileInfo()
-
-	// แปลง object เป็น JSON สวยๆ
-	jsonBytes, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		l.Error("Failed to dump data", err)
-		return
-	}
-	// เลือกสีตาม Level
-	color := ColorPurple
-	switch strings.ToUpper(level) {
-	case LevelDebug:
-		color = ColorBlue
-	case LevelInfo:
-		color = ColorCyan
-	case LevelWarn:
-		color = ColorYellow
-	case LevelError:
-		color = ColorRed
-	case LevelSuccess:
-		color = ColorGreen
-	}
-	log.Printf("%s🔍 DUMP_F  %s: %s\n%s%s", color, location, msg, string(jsonBytes), ColorReset)
 }

@@ -15,6 +15,7 @@ import (
 	"go-template/internal/adapters/primary/http/handlers"
 	"go-template/internal/adapters/primary/http/middleware"
 	"go-template/internal/modules/example/example_user"
+	"go-template/pkg/auth"
 	"go-template/pkg/config"
 	"go-template/pkg/custom_errors"
 	"go-template/pkg/logger"
@@ -23,41 +24,40 @@ import (
 	"go-template/pkg/validator"
 )
 
-// "ช่องรับ" ข้อมูล Build ที่จะถูกยิงเข้ามาโดย Linker Flags (-ldflags)
+// "ช่องรับ" ข้อมูล Build
 var (
 	AppVersion string
 	BuildTime  string
 	CommitHash string
 )
 
-// ⭐️ 1. สร้าง "นาฬิกาเทียบเวลา" ของเราเป็นตัวแปร Global ⭐️
+// "นาฬิกาเทียบเวลา" Global
 var (
 	bangkokLocation *time.Location
 )
 
 func main() {
-
-	// --- ⭐️ 2. ตั้งค่า "นาฬิกาเทียบเวลา" เป็นอย่างแรกสุด! ⭐️ ---
+	// --- ตั้งค่า Time Zone ---
 	var err error
 	bangkokLocation, err = time.LoadLocation("Asia/Bangkok")
 	if err != nil {
 		log.Fatalf("❌ Failed to load Bangkok time zone: %v", err)
 	}
 
-	// --- 0. โหลด Environment Variables (สำหรับ Local Dev) ---
+	// --- โหลด .env ---
 	if os.Getenv("DOCKER_ENV") != "true" {
 		if err := godotenv.Load(); err != nil {
 			log.Println("Warning: .env file not found")
 		}
 	}
 
-	// --- 1. โหลด Configuration ---
+	// --- โหลด Configuration ---
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		log.Fatalf("❌ Failed to load configuration: %v", err)
 	}
 
-	// --- 2. สร้าง Logger ---
+	// --- สร้าง Dependencies ส่วนกลาง ---
 	var appLogger logger.Logger
 	if cfg.Server.Mode == "development" {
 		appLogger = logger.NewPrettyLogger()
@@ -67,14 +67,16 @@ func main() {
 	appLogger.Info("Logger initialized", "mode", cfg.Server.Mode)
 
 	appValidator := validator.New()
+	authService := auth.NewAuthService(cfg.Auth.JWTSecret)
 
-	// --- 3. เชื่อมต่อ Platforms (Databases) ---
+	authMiddleware := middleware.AuthMiddleware(authService)
+
+	// --- เชื่อมต่อ Platforms ---
 	primaryDB, err := postgres.NewConnection(cfg.Postgres.Primary, appLogger)
 	if err != nil {
 		appLogger.Error("Failed to connect to primary database", err)
 		os.Exit(1)
 	}
-	// เชื่อมต่อ Database สำหรับเก็บ Logs (ถ้ามีการตั้งค่า)
 	var logsDB *gorm.DB
 	if cfg.Postgres.Logs.Host != "" {
 		logsDB, err = postgres.NewConnection(cfg.Postgres.Logs, appLogger)
@@ -84,16 +86,17 @@ func main() {
 		}
 	}
 
-	// --- 4. ประกอบร่าง Modules (Dependency Injection) ---
-	_ = logsDB // ป้องกัน unused variable
+	// --- ประกอบร่าง Modules (Dependency Injection) ---
+	_ = logsDB
 
 	healthHandler := handlers.NewHealthHandler(primaryDB)
 
-	exampleUserRepo := example_user.NewExampleRepository(primaryDB, appLogger)
-	exampleUserService := example_user.NewExampleUserService(exampleUserRepo, cfg.Auth.JWTSecret, appLogger)
+	// ⭐️⭐️⭐️ แก้ไขตรงนี้ให้ถูกต้อง! ⭐️⭐️⭐️
+	exampleUserRepo := example_user.NewExampleUserRepository(primaryDB, appLogger)
+	exampleUserService := example_user.NewExampleUserService(exampleUserRepo, authService, appLogger)
 	exampleUserHandler := example_user.NewExampleUserHandler(exampleUserService, appLogger, bangkokLocation, appValidator)
 
-	// --- 5. ตั้งค่า Web Server (Fiber) ---
+	// --- ตั้งค่า Web Server (Fiber) ---
 	app := fiber.New(fiber.Config{
 		AppName: fmt.Sprintf("%s %s", cfg.App.Name, AppVersion),
 		ErrorHandler: func(c fiber.Ctx, err error) error {
@@ -106,7 +109,7 @@ func main() {
 		},
 	})
 
-	// --- 6. ติดตั้ง Middlewares & Routes ---
+	// --- ติดตั้ง Middlewares & Routes ---
 	app.Use(middleware.Logger(appLogger))
 	app.Use(middleware.CORS())
 
@@ -114,11 +117,10 @@ func main() {
 
 	apiV1 := app.Group("/api/v1")
 	example := apiV1.Group("/example")
-	exampleUserHandler.RegisterRoutes(example)
+	exampleUserHandler.RegisterRoutes(example, authMiddleware)
 
-	// --- 7. เริ่มและปิดการทำงานของ Server ---
+	// --- เริ่มและปิดการทำงานของ Server ---
 	go func() {
-		// แอปของเราจะ Listen ที่ AppPort "ข้างใน" Container เสมอ
 		listenAddr := fmt.Sprintf(":%s", cfg.Server.AppPort)
 
 		appLogger.Info("Server starting...",
@@ -143,7 +145,6 @@ func main() {
 	<-quit
 	appLogger.Info("Shutting down server...")
 
-	// ใช้ app.Shutdown() แบบไม่มี context ตามเวอร์ชัน Fiber ที่เราใช้
 	if err := app.Shutdown(); err != nil {
 		appLogger.Error("Server shutdown failed", err)
 		os.Exit(1)
