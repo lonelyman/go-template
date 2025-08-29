@@ -24,7 +24,8 @@ type Service interface {
 	UpdateUser(id uint, req *UpdateUserRequest) (*Domain, error)
 	DeleteUser(id uint) error
 	ChangePassword(id uint, oldPassword, newPassword string) error
-	Login(email, password string) (string, error)
+	Login(email, password string) (accessToken string, refreshToken string, err error)
+	RefreshToken(refreshToken string) (newAccessToken string, err error)
 }
 
 // service คือ struct ที่ทำงานจริง
@@ -258,35 +259,57 @@ func (s *service) ChangePassword(id uint, oldPassword, newPassword string) error
 }
 
 // Login handles the business logic for user authentication.
-func (s *service) Login(email, password string) (string, error) {
-	// 1. ค้นหาผู้ใช้ด้วยอีเมลจาก Repo
-	user, err := s.repo.GetByEmail(email)
-	if err != nil {
-		// ถ้าเจอ error อื่นที่ไม่ใช่ "หาไม่เจอ" ให้ถือว่าเป็น System Error
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", custom_errors.SystemErrorWithDetails("เกิดข้อผิดพลาดในการค้นหาข้อมูลผู้ใช้", err.Error())
+func (s *service) Login(email, password string) (accessToken string, refreshToken string, err error) {
+	// 1. ค้นหาผู้ใช้ด้วยอีเมล
+	user, repoErr := s.repo.GetByEmail(email)
+	if repoErr != nil {
+		if !errors.Is(repoErr, gorm.ErrRecordNotFound) {
+			return "", "", custom_errors.SystemErrorWithDetails("เกิดข้อผิดพลาดในการค้นหาข้อมูลผู้ใช้", repoErr.Error())
 		}
-		// ถ้า "หาไม่เจอ" ให้คืนค่า Unauthorized เพื่อความปลอดภัย
-		// (เราจะไม่บอก Hacker ว่า "อีเมลนี้ไม่มีในระบบ" แต่จะบอกแค่ว่า "ข้อมูลไม่ถูกต้อง")
-		return "", custom_errors.UnauthorizedError("อีเมลหรือรหัสผ่านไม่ถูกต้อง")
+		return "", "", custom_errors.UnauthorizedError("อีเมลหรือรหัสผ่านไม่ถูกต้อง")
 	}
 
-	// 2. ⭐️ "ตรวจสอบตัวตน": เปรียบเทียบรหัสผ่านที่ส่งมากับ Hash ใน DB ⭐️
-	// เราจะเรียกใช้ "บอดี้การ์ด" (pkg/auth) ของเรามาช่วย
+	// 2. "ตรวจสอบตัวตน"
 	if err := s.auth.ComparePassword(user.PasswordHash, password); err != nil {
-		// ถ้า err ไม่ใช่ nil แสดงว่ารหัสผ่านไม่ถูกต้อง!
-		return "", custom_errors.UnauthorizedError("อีเมลหรือรหัสผ่านไม่ถูกต้อง")
+		return "", "", custom_errors.UnauthorizedError("อีเมลหรือรหัสผ่านไม่ถูกต้อง")
 	}
 
-	// 3. "สร้างกุญแจ": ถ้าทุกอย่างถูกต้อง ให้สร้าง JWT Token
-	// (เราจะต้องไปสร้างฟังก์ชัน GenerateToken กันในขั้นตอนต่อไปนะ!)
-	token, err := s.auth.GenerateToken(user.ID, user.Role)
+	// 3. ✨ "สร้างกุญแจสองชั้น"! ✨
+	accessToken, refreshToken, tokenErr := s.auth.GenerateTokens(user.ID, user.Role)
+	if tokenErr != nil {
+		return "", "", custom_errors.SystemErrorWithDetails("ไม่สามารถสร้าง Token ได้", tokenErr.Error())
+	}
+
+	// 4. คืนค่า "กุญแจ" ทั้งสองดอกกลับไปให้ Handler
+	return accessToken, refreshToken, nil
+}
+
+// RefreshToken handles the logic for refreshing an access token.
+func (s *service) RefreshToken(refreshToken string) (newAccessToken string, err error) {
+	// 1. ส่ง "บัตรสมาชิก" ไปให้ "บริษัทรักษาความปลอดภัย" ตรวจสอบ
+	// ถ้าบัตรถูกต้อง จะได้ UserID กลับมา
+	userID, err := s.auth.ValidateRefreshToken(refreshToken)
 	if err != nil {
-		return "", custom_errors.SystemErrorWithDetails("ไม่สามารถสร้าง Token ได้", err.Error())
+
+		return "", custom_errors.SystemErrorWithDetails("ไม่สามารถตรวจสอบ Refresh Token ได้", err.Error())
 	}
 
-	// 4. คืนค่า "กุญแจ" กลับไปให้ Handler
-	return token, nil
+	// 2. (Pro-Tip!) ตรวจสอบอีกชั้น: เช็คว่า User คนนี้ยังมีตัวตนอยู่ในระบบจริงๆ หรือไม่
+	user, err := s.repo.GetByID(userID)
+	if err != nil {
+		// ถ้าหาไม่เจอ (อาจจะถูกลบไปแล้ว) ก็ไม่ควรออกบัตรใหม่ให้
+		return "", custom_errors.UnauthorizedError("User not found")
+	}
+
+	// 3. ถ้าทุกอย่างถูกต้อง... ให้ออก "บัตรผ่านรายวัน" (Access Token) ใบใหม่!
+	// สังเกตว่าเราจะใช้ GenerateToken ตัวเดิมที่สร้างแค่ Access Token ได้เลย
+	_, newAccessToken, err = s.auth.GenerateTokens(user.ID, user.Role)
+	if err != nil {
+		return "", custom_errors.SystemErrorWithDetails("ไม่สามารถสร้าง Access Token ใหม่ได้", err.Error())
+	}
+
+	// 4. คืนค่า "บัตรผ่านรายวัน" ใบใหม่กลับไป
+	return newAccessToken, nil
 }
 
 // --- Private Helpers ---

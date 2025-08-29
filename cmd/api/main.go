@@ -22,6 +22,8 @@ import (
 	"go-template/pkg/platform/postgres"
 	"go-template/pkg/response"
 	"go-template/pkg/validator"
+
+	"github.com/gofiber/fiber/v3/middleware/limiter"
 )
 
 // "ช่องรับ" ข้อมูล Build
@@ -69,6 +71,7 @@ func main() {
 	appValidator := validator.New()
 	authService := auth.NewAuthService(cfg.Auth.JWTSecret)
 
+	// แบบที่ 1: "ยามที่เราฝึกเอง" (AuthMiddleware) - แนะนำสำหรับ Template นี้เพราะสอดคล้องกับระบบ
 	authMiddleware := middleware.AuthMiddleware(authService)
 
 	// --- เชื่อมต่อ Platforms ---
@@ -109,6 +112,20 @@ func main() {
 		},
 	})
 
+	// ติดตั้ง "ยามคุมจำนวนคน" เป็นคนแรกๆ เลย!
+	app.Use(limiter.New(limiter.Config{
+		Max:        100,             // อนุญาตสูงสุด 100 requests
+		Expiration: 1 * time.Minute, // ภายใน 1 นาที
+		KeyGenerator: func(c fiber.Ctx) string {
+			return c.IP() // ใช้ IP Address เป็นตัวนับ
+		},
+		LimitReached: func(c fiber.Ctx) error {
+			// (Pro-Tip!) ทำให้ Error Response ของ Limiter เป็นมาตรฐานเดียวกับของเรา!
+			appErr := custom_errors.NewWithDetails(fiber.StatusTooManyRequests, "TOO_MANY_REQUESTS", "You have reached your request limit.", err.Error())
+			return response.Error(c, appErr)
+		},
+	}))
+
 	// --- ติดตั้ง Middlewares & Routes ---
 	app.Use(middleware.Logger(appLogger))
 	app.Use(middleware.CORS())
@@ -116,7 +133,7 @@ func main() {
 	healthHandler.RegisterRoutes(app)
 
 	apiV1 := app.Group("/api/v1")
-	example := apiV1.Group("/example")
+	example := apiV1.Group("")
 	exampleUserHandler.RegisterRoutes(example, authMiddleware)
 
 	// --- เริ่มและปิดการทำงานของ Server ---

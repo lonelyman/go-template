@@ -35,7 +35,7 @@ func AuthMiddleware(authService auth.Service) fiber.Handler {
 		claims, err := authService.ValidateToken(tokenString)
 		if err != nil {
 			// ถ้าบริษัทบอกว่าบัตรปลอมหรือหมดอายุ ก็ไม่ต้องให้เข้า
-			appErr := custom_errors.New(fiber.StatusUnauthorized, custom_errors.ErrInvalidToken, "Invalid or expired token")
+			appErr := custom_errors.NewWithDetails(fiber.StatusUnauthorized, custom_errors.ErrInvalidToken, "Invalid or expired token", err.Error())
 			return response.Error(c, appErr)
 		}
 
