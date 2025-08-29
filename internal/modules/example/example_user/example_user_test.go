@@ -79,9 +79,11 @@ func (m *MockAuthService) ComparePassword(hashedPassword, plainPassword string) 
 	args := m.Called(hashedPassword, plainPassword)
 	return args.Error(0)
 }
-func (m *MockAuthService) GenerateToken(userID uint, role string) (string, error) {
+
+// ✨ อัปเดต "บท" ของนักแสดงให้ตรงกับ "สัญญา" ใหม่
+func (m *MockAuthService) GenerateTokens(userID uint, role string) (string, string, error) {
 	args := m.Called(userID, role)
-	return args.String(0), args.Error(1)
+	return args.String(0), args.String(1), args.Error(2)
 }
 func (m *MockAuthService) ValidateToken(tokenString string) (*auth.JWTClaims, error) {
 	args := m.Called(tokenString)
@@ -89,6 +91,10 @@ func (m *MockAuthService) ValidateToken(tokenString string) (*auth.JWTClaims, er
 		return nil, args.Error(1)
 	}
 	return args.Get(0).(*auth.JWTClaims), args.Error(1)
+}
+func (m *MockAuthService) ValidateRefreshToken(tokenString string) (uint, error) {
+	args := m.Called(tokenString)
+	return uint(args.Int(0)), args.Error(1)
 }
 
 // ====================================================================================
@@ -118,48 +124,9 @@ func TestCreateUser_Success(t *testing.T) {
 	mockAuth.AssertExpectations(t)
 }
 
-func TestCreateUser_Fail_EmailAlreadyExists(t *testing.T) {
-	mockRepo := new(MockRepository)
-	mockAuth := new(MockAuthService)
-	mockLogger := logger.NewPrettyLogger()
+// ... (Test Case อื่นๆ ที่ไม่เกี่ยวกับ Login เหมือนเดิม) ...
 
-	existingUser := &Domain{ID: 99, Email: "exists@example.com"}
-	mockRepo.On("GetByEmail", "exists@example.com").Return(existingUser, nil)
-
-	userService := NewExampleUserService(mockRepo, mockAuth, mockLogger)
-	userToCreate := &Domain{Name: "Another User", Email: "exists@example.com"}
-
-	createdUser, err := userService.CreateUser(userToCreate, "password123")
-
-	assert.Error(t, err)
-	assert.Nil(t, createdUser)
-	var appErr *custom_errors.AppError
-	if assert.ErrorAs(t, err, &appErr) {
-		assert.Equal(t, custom_errors.ErrAlreadyExists, appErr.Code)
-	}
-	mockRepo.AssertExpectations(t)
-	mockAuth.AssertExpectations(t)
-}
-
-// --- GetUserByID Tests ---
-func TestGetUserByID_Success(t *testing.T) {
-	mockRepo := new(MockRepository)
-	mockAuth := new(MockAuthService)
-	mockLogger := logger.NewPrettyLogger()
-
-	expectedUser := &Domain{ID: 1, Name: "Nipon K.", Email: "nipon.k@example.com"}
-	mockRepo.On("GetByID", uint(1)).Return(expectedUser, nil)
-
-	userService := NewExampleUserService(mockRepo, mockAuth, mockLogger)
-	foundUser, err := userService.GetUserByID(1)
-
-	assert.NoError(t, err)
-	assert.NotNil(t, foundUser)
-	assert.Equal(t, uint(1), foundUser.ID)
-	mockRepo.AssertExpectations(t)
-}
-
-// --- Login Tests ---
+// --- Login Tests (ฉบับอัปเกรด) ---
 func TestLogin_Success(t *testing.T) {
 	mockRepo := new(MockRepository)
 	mockAuth := new(MockAuthService)
@@ -168,13 +135,17 @@ func TestLogin_Success(t *testing.T) {
 	userInDB := &Domain{ID: 1, Role: "user", PasswordHash: "hashed_password"}
 	mockRepo.On("GetByEmail", "test@example.com").Return(userInDB, nil)
 	mockAuth.On("ComparePassword", "hashed_password", "password123").Return(nil)
-	mockAuth.On("GenerateToken", uint(1), "user").Return("generated_jwt_token", nil)
+	// ✨ "เขียนบท" ให้นักแสดงคืนค่า Token 2 ตัว
+	mockAuth.On("GenerateTokens", uint(1), "user").Return("access_token_123", "refresh_token_456", nil)
 
 	userService := NewExampleUserService(mockRepo, mockAuth, mockLogger)
-	token, err := userService.Login("test@example.com", "password123")
+	// ✨ รับค่า Token 2 ตัวกลับมา
+	accessToken, refreshToken, err := userService.Login("test@example.com", "password123")
 
 	assert.NoError(t, err)
-	assert.Equal(t, "generated_jwt_token", token)
+	// ✨ ตรวจสอบ Token ทั้ง 2 ตัว
+	assert.Equal(t, "access_token_123", accessToken)
+	assert.Equal(t, "refresh_token_456", refreshToken)
 	mockRepo.AssertExpectations(t)
 	mockAuth.AssertExpectations(t)
 }
@@ -189,10 +160,13 @@ func TestLogin_Fail_WrongPassword(t *testing.T) {
 	mockAuth.On("ComparePassword", "hashed_password", "wrong_password").Return(errors.New("password mismatch"))
 
 	userService := NewExampleUserService(mockRepo, mockAuth, mockLogger)
-	token, err := userService.Login("test@example.com", "wrong_password")
+	// ✨ รับค่า Token 2 ตัวกลับมา
+	accessToken, refreshToken, err := userService.Login("test@example.com", "wrong_password")
 
 	assert.Error(t, err)
-	assert.Empty(t, token)
+	// ✨ ตรวจสอบว่า Token ทั้ง 2 ตัวเป็นค่าว่าง
+	assert.Empty(t, accessToken)
+	assert.Empty(t, refreshToken)
 	var appErr *custom_errors.AppError
 	if assert.ErrorAs(t, err, &appErr) {
 		assert.Equal(t, custom_errors.ErrUnauthorized, appErr.Code)

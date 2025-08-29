@@ -103,8 +103,14 @@ func (h *handler) RegisterRoutes(router fiber.Router, authMiddleware fiber.Handl
 
 	// --- 🚪 Public Routes (ประตูสาธารณะ - ไม่ต้องใช้ Token) ---
 	userRouter.Post("", h.CreateUser)
-	userRouter.Post("/login", h.Login)
 	userRouter.Get("", h.ListUsers) // เราอาจจะอยากให้ List เป็น public
+	// userRouter.Post("/login", h.Login)
+	// userRouter.Post("/refresh", h.RefreshToken)
+
+	// --- Auth Routes ---
+	authRouter := router.Group("/auth") // 👈 สร้าง Group ใหม่
+	authRouter.Post("/login", h.Login)
+	authRouter.Post("/refresh", h.RefreshToken) // 👈 เพิ่ม Route ใหม่สำหรับ Refresh
 
 	// --- 🔐 Protected Routes (โซนปลอดภัย - ต้องใช้ Token) ---
 	// 1. สร้าง Group ใหม่ขึ้นมาจาก userRouter
@@ -325,7 +331,7 @@ func (h *handler) ChangePassword(c fiber.Ctx) error {
 
 // Login handles POST /users/login
 func (h *handler) Login(c fiber.Ctx) error {
-	// 1. Bind & Validate Request Body
+	// 1. Bind & Validate Request Body (เหมือนเดิม)
 	req := new(LoginRequest)
 	if err := c.Bind().Body(req); err != nil {
 		appErr := custom_errors.InvalidFormatError("Request body is not valid JSON", err.Error())
@@ -336,15 +342,47 @@ func (h *handler) Login(c fiber.Ctx) error {
 		return response.Error(c, appErr)
 	}
 
-	// 2. Call Service เพื่อขอ "กุญแจดิจิทัล" (JWT)
-	// Service จะคืนค่าเป็น string (token) กลับมา
-	token, serviceErr := h.service.Login(req.Email, req.Password)
+	// 2. ✨ เรียก Service เพื่อขอ "กุญแจสองชั้น" ✨
+	accessToken, refreshToken, serviceErr := h.service.Login(req.Email, req.Password)
 	if serviceErr != nil {
 		return response.Error(c, serviceErr.(*custom_errors.AppError))
 	}
 
-	// 3. ส่ง "กุญแจ" กลับไปให้ Client
-	return response.Success(c, fiber.StatusOK, "Login successful", fiber.Map{"token": token}, nil)
+	// 3. ✨ ส่ง "บัตรสมาชิก" (Refresh Token) กลับไปเป็น HttpOnly Cookie เพื่อความปลอดภัยสูงสุด ✨
+	c.Cookie(&fiber.Cookie{
+		Name:     "refresh_token",
+		Value:    refreshToken,
+		Expires:  time.Now().Add(7 * 24 * time.Hour), // อายุต้องตรงกับใน auth service
+		HTTPOnly: true,                               // ⭐️ ป้องกันไม่ให้ JavaScript เข้าถึงได้ (ป้องกัน XSS)
+		Secure:   false,                               // ⭐️ ใน Production ควรเป็น true (ส่งผ่าน HTTPS เท่านั้น)
+		SameSite: "Strict",
+	})
+
+	// 4. ✨ ส่ง "บัตรผ่านรายวัน" (Access Token) กลับไปใน JSON body ✨
+	return response.Success(c, fiber.StatusOK, "Login successful", fiber.Map{
+		"access_token": accessToken,
+	}, nil)
+}
+
+// RefreshToken handles POST /auth/refresh
+func (h *handler) RefreshToken(c fiber.Ctx) error {
+	// 1. ดึง "บัตรสมาชิก" (Refresh Token) ออกมาจาก "ตู้เซฟ" (Cookie)
+	refreshToken := c.Cookies("refresh_token")
+	if refreshToken == "" {
+		appErr := custom_errors.UnauthorizedError("Refresh token not found")
+		return response.Error(c, appErr)
+	}
+
+	// 2. เรียก Service เพื่อขอ "บัตรผ่านรายวัน" ใบใหม่
+	newAccessToken, serviceErr := h.service.RefreshToken(refreshToken)
+	if serviceErr != nil {
+		return response.Error(c, serviceErr.(*custom_errors.AppError))
+	}
+
+	// 3. ส่ง "บัตรผ่านรายวัน" ใบใหม่กลับไปให้ Client
+	return response.Success(c, fiber.StatusOK, "Token refreshed successfully", fiber.Map{
+		"access_token": newAccessToken,
+	}, nil)
 }
 
 // --- Private Helpers ---
